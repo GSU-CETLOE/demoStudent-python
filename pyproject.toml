@@ -1,0 +1,28 @@
+[project]
+name = "demostudent"
+version = "0.1.0"
+description = "Adds a per-course Demo Student user to D2L Brightspace course offerings"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+demo-student = "demostudent.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/demostudent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

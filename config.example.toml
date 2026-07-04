@@ -1,0 +1,24 @@
+# Copy this file to config.toml and fill in your values.
+# config.toml is gitignored because it contains the client secret.
+# The client secret may instead be supplied via the
+# DEMO_STUDENT_CLIENT_SECRET environment variable.
+
+# --- required ---
+host = "yourschool.brightspace.com"           # D2L hostname, no scheme
+clientId = "your-oauth2-client-id"
+clientSecret = "your-oauth2-client-secret"
+redirectUri = "https://localhost:8443/callback"  # must match the registered redirect URI
+
+# --- optional (defaults shown) ---
+# scope = "core:*:*"
+# roleId = 783                    # the "Demo Student" role id
+# orgOu = 1070555                 # organization org unit that contains the semesters
+# semesterOuType = 5              # org unit type id for semesters
+# courseOfferingOuType = 3        # org unit type id for course offerings
+# usernamePrefix = "demo"         # usernames become demo.{orgUnitId}
+# firstName = "Demo"
+# lastName = "Student"
+# externalEmailDomain = "student.gsu.edu"
+# recentSemesterCount = 2         # how many recent semesters to process
+# maxWorkers = 8                  # worker threads for course processing
+# workingDir = "working"          # holds the SQLite db, tokens, mkcert certs, and logs/

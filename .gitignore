@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+CLAUDE.MD
+
+# App runtime state (tokens, SQLite db, mkcert certs)
+working/
+
+# Local configuration with secrets
+config.toml
