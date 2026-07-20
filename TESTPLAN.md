@@ -75,6 +75,11 @@ manual testing.
 - [ ] Fatal errors (e.g. `run` without stored tokens) are appended to the log file
 - [ ] A second run in the same month appends to the same file (no duplicates,
       no new file)
+- [ ] Setting `logDir` in config.toml to a relative path writes logs under
+      `working/{logDir}/` instead of `working/logs/`
+- [ ] Setting `logDir` to an absolute path writes logs there directly
+- [ ] Setting `logFilePrefix` in config.toml changes the log file name to
+      `{logFilePrefix}_YYYYMM.log`
 
 ## Database
 

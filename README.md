@@ -62,7 +62,7 @@ Runtime state lives in the `working/` directory (configurable via
 working/
   db/demoStudent.db     SQLite database (completed courses, runs, errors)
   token/token.json      OAuth2 token store
-  logs/                 monthly log files
+  logs/                 monthly log files (dir name via `logDir`)
   localhost.pem(-key)   mkcert certificate for the browser auth flow
 ```
 
@@ -144,7 +144,8 @@ In addition to the database, all errors, warnings, and run lifecycle events
 (start, discovery counts, finish summary) are appended to monthly plain-text
 log files in `working/logs/demoStudent_YYYYMM.log`. Per-course success lines
 appear only on the console; the log files stay focused on errors and run
-outcomes.
+outcomes. The directory (`logDir`) and file name prefix (`logFilePrefix`)
+are both configurable — see `config.example.toml`.
 
 ## Development
 

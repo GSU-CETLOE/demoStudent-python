@@ -42,6 +42,8 @@ class AppConfig:
     externalEmailDomain: str = "student.gsu.edu"
     recentSemesterCount: int = 2
     maxWorkers: int = 8
+    logDir: str = "logs"
+    logFilePrefix: str = "demoStudent"
 
     @property
     def dbPath(self) -> Path:

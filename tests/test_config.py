@@ -21,6 +21,8 @@ externalEmailDomain = "student.gsu.edu"
 recentSemesterCount = 2
 maxWorkers = 8
 workingDir = "working"
+logDir = "logs"
+logFilePrefix = "demoStudent"
 """
 
 MINIMAL_CONFIG = """
@@ -54,6 +56,8 @@ def test_loadFullConfig(tmp_path):
     assert config.externalEmailDomain == "student.gsu.edu"
     assert config.recentSemesterCount == 2
     assert config.maxWorkers == 8
+    assert config.logDir == "logs"
+    assert config.logFilePrefix == "demoStudent"
 
 
 def test_minimalConfigUsesDefaults(tmp_path):
@@ -68,6 +72,8 @@ def test_minimalConfigUsesDefaults(tmp_path):
     assert config.lastName == "Student"
     assert config.recentSemesterCount == 2
     assert config.maxWorkers == 8
+    assert config.logDir == "logs"
+    assert config.logFilePrefix == "demoStudent"
 
 
 def test_workingDirRelativeToConfigFile(tmp_path):

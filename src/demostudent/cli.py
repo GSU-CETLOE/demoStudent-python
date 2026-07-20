@@ -68,7 +68,7 @@ def buildParser() -> argparse.ArgumentParser:
 
 def cmdAuth(config: AppConfig, manual: bool) -> int:
     """Run an interactive OAuth flow, then verify the token with whoami."""
-    setupFileLogging(config.workingDir)
+    setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     obtainTokensInteractively(config, manual=manual)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
@@ -84,7 +84,7 @@ def cmdAuth(config: AppConfig, manual: bool) -> int:
 
 def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
     """Execute one enrollment pass and print the summary."""
-    setupFileLogging(config.workingDir)
+    setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     ouList = None
     if args.ou_list:
         ouList = [int(orgUnitId) for orgUnitId in args.ou_list.split(",") if orgUnitId.strip()]
@@ -163,7 +163,7 @@ def cmdImportLegacy(config: AppConfig, filePath: str) -> int:
             raise ConfigError(f"{path}:{lineNumber}: expected an org unit id, got '{line}'")
         orgUnitIds.append(int(line))
 
-    setupFileLogging(config.workingDir)
+    setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     db = MetricsDb(config.dbPath)
     try:
         added = db.importCompletedOrgUnits(orgUnitIds)

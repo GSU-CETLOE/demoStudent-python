@@ -22,3 +22,5 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 # recentSemesterCount = 2         # how many recent semesters to process
 # maxWorkers = 8                  # worker threads for course processing
 # workingDir = "working"          # holds the SQLite db, tokens, mkcert certs, and logs/
+# logDir = "logs"                 # log directory; relative to workingDir unless absolute
+# logFilePrefix = "demoStudent"   # log files become {logFilePrefix}_YYYYMM.log

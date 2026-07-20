@@ -39,3 +39,19 @@ def test_logLinesAreTimestamped(tmp_path):
     logging.getLogger(LOGGER_NAME).error("timed entry")
     line = logPath.read_text().splitlines()[0]
     assert line.startswith(str(datetime.now().year))
+
+
+def test_customLogDirRelativeToWorkingDir(tmp_path):
+    logPath = setupFileLogging(tmp_path / "working", logDir="audit")
+    assert logPath.parent == tmp_path / "working" / "audit"
+
+
+def test_customLogDirAbsolutePathRespected(tmp_path):
+    absoluteLogDir = tmp_path / "elsewhere" / "logs"
+    logPath = setupFileLogging(tmp_path / "working", logDir=str(absoluteLogDir))
+    assert logPath.parent == absoluteLogDir
+
+
+def test_customPrefixNamesTheLogFile(tmp_path):
+    logPath = setupFileLogging(tmp_path / "working", prefix="myApp")
+    assert logPath.name == f"myApp_{datetime.now():%Y%m}.log"
