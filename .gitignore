@@ -10,6 +10,7 @@ wheels/
 .venv
 
 CLAUDE.MD
+.claude/
 
 # App runtime state (tokens, SQLite db, mkcert certs)
 working/
