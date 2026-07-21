@@ -11,6 +11,7 @@ wheels/
 
 CLAUDE.MD
 .claude/
+.claude
 
 # App runtime state (tokens, SQLite db, mkcert certs)
 working/
