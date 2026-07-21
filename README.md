@@ -155,75 +155,35 @@ uv run pytest        # run the test suite
 
 See `TESTPLAN.md` for the manual end-to-end checklist.
 
-CI-CD GitHub
+## CI/CD
 
-# YAML:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request to `master`:
 
-name: Test and Deploy (demoStudent)
+- **test** — `uv sync` then `uv run pytest`.
+- **deploy** (push to `master` only, after `test` passes, runs on the
+  self-hosted runner) — rsyncs the checkout into
+  `/apps/local/cetlocron/data/apps/demoStudent`, then runs `uv sync` there.
 
-on:
-push:
-branches: [master]
-pull_request:
-branches: [master]
+Notes on the deploy step:
 
-jobs:
-test:
-runs-on: ubuntu-latest
-steps: - name: Checkout code
-uses: actions/checkout@v4
+- `rsync -av --delete` mirrors the repo into the app directory, removing
+  files that no longer exist in git. The trailing slashes on `./` and
+  `"$APP_DIR"/` matter — they copy contents into the folder instead of
+  nesting a new folder inside it.
+- `--exclude 'config.toml'` is required — without it, `--delete` would wipe
+  out the live config, since it isn't part of the git checkout.
+- `--exclude 'working/'` protects the SQLite database, tokens, and logs from
+  being touched by a deploy.
+- `uv sync` runs with `working-directory` set to `$APP_DIR`, so the virtual
+  environment lives next to the deployed code, not in the runner's temporary
+  checkout.
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+### One-time server setup (before the first deploy)
 
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Run tests
-        run: uv run pytest
-
-deploy:
-needs: test
-runs-on: self-hosted
-if: github.ref == 'refs/heads/master'
-env:
-APP_DIR: /apps/local/cetlocron/data/apps/demoStudent
-steps: - name: Checkout code
-uses: actions/checkout@v4
-
-      - name: Sync code to app directory
-        run: |
-          mkdir -p "$APP_DIR"
-          rsync -av --delete \
-            --exclude 'config.toml' \
-            --exclude 'working/' \
-            ./ "$APP_DIR"/
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-
-      - name: Sync dependencies in app directory
-        working-directory: /apps/local/cetlocron/data/apps/demoStudent
-        run: uv sync
-
-      - name: Verify config exists
-        run: |
-          if [ ! -f "$APP_DIR/config.toml" ]; then
-            echo "ERROR: config.toml not found in $APP_DIR"
-            echo "Create it once manually: cp config.example.toml config.toml, then fill it in."
-            exit 1
-          fi
-
-=================
-Why each piece is there
-rsync -av --delete — mirrors the checked-out code into /apps/local/cetlocron/data/apps/demoStudent, removing files that no longer exist in the repo (so old/renamed files don't linger). The trailing slashes on ./ and "$APP_DIR"/ matter — they tell rsync to copy contents into the folder, not create a nested folder inside it.
---exclude 'config.toml' — critical. Without this, rsync's --delete would wipe out your live config since it doesn't exist in the git checkout. This exclude keeps your real credentials untouched on every deploy.
---exclude 'working/' — the repo's README mentions working/ holds the SQLite database, tokens, and logs — none of that should ever be touched by a code deploy either.
-uv sync runs in $APP_DIR — via working-directory, so the actual virtual environment/dependencies live alongside the deployed code, not in the runner's temporary \_work checkout.
-
-One-time setup you'll need to do on the server, before the first deploy runs
-
+```sh
 sudo mkdir -p /apps/local/cetlocron/data/apps/demoStudent
 sudo chown -R <runner-user> /apps/local/cetlocron/data/apps/demoStudent
 cd /apps/local/cetlocron/data/apps/demoStudent
-cp config.example.toml config.toml # then fill in host, clientId, clientSecret, redirectUri
+cp config.example.toml config.toml   # then fill in host, clientId, clientSecret, redirectUri
+```
