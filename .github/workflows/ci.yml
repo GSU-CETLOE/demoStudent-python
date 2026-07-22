@@ -1,56 +1,50 @@
-name: Test and Deploy (demoStudent)
+name: Test and Deploy
 
 on:
-    push:
-        branches: [master]
-    pull_request:
-        branches: [master]
+  push:
+    branches: [develop, master]
+  pull_request:
+    branches: [develop, master]
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: uv run pytest
 
-            - name: Install uv
-              uses: astral-sh/setup-uv@v3
+  deploy-dev:
+    needs: test
+    runs-on: [self-hosted, cetlodevweb02]
+    environment: development
+    if: github.ref == 'refs/heads/develop'
+    env:
+      APP_DIR: /apps/local/cetlocron/data/apps/demoStudent
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync code
+        run: |
+          mkdir -p "$APP_DIR"
+          rsync -av --delete --exclude 'config.toml' --exclude 'working/' ./ "$APP_DIR"/
+      - uses: astral-sh/setup-uv@v3
+      - working-directory: /apps/local/cetlocron/data/apps/demoStudent
+        run: uv sync
 
-            - name: Install dependencies
-              run: uv sync
-
-            - name: Run tests
-              run: uv run pytest
-
-    deploy:
-        needs: test
-        runs-on: self-hosted
-        if: github.ref == 'refs/heads/master'
-        env:
-            APP_DIR: /apps/local/cetlocron/data/apps/demoStudent
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
-
-            - name: Sync code to app directory
-              run: |
-                  mkdir -p "$APP_DIR"
-                  rsync -av --delete \
-                    --exclude 'config.toml' \
-                    --exclude 'working/' \
-                    ./ "$APP_DIR"/
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v3
-
-            - name: Sync dependencies in app directory
-              working-directory: /apps/local/cetlocron/data/apps/demoStudent
-              run: uv sync
-
-            - name: Verify config exists
-              run: |
-                  if [ ! -f "$APP_DIR/config.toml" ]; then
-                    echo "ERROR: config.toml not found in $APP_DIR"
-                    echo "Create it once manually: cp config.example.toml config.toml, then fill it in."
-                    exit 1
-                  fi
+  deploy-prod:
+    needs: test
+    runs-on: [self-hosted, cetloprodweb02]
+    environment: production
+    if: github.ref == 'refs/heads/master'
+    env:
+      APP_DIR: /apps/local/cetlocron/data/apps/demoStudent
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync code
+        run: |
+          mkdir -p "$APP_DIR"
+          rsync -av --delete --exclude 'config.toml' --exclude 'working/' ./ "$APP_DIR"/
+      - uses: astral-sh/setup-uv@v3
+      - working-directory: /apps/local/cetlocron/data/apps/demoStudent
+        run: uv sync
