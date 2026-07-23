@@ -27,6 +27,11 @@ jobs:
       APP_DIR: /apps/local/cetlocron/data/apps/demoStudent
     steps:
       - uses: actions/checkout@v4
+      - name: Install/update demoStudent.sh script
+        run: |
+          mkdir -p /data/cetlocron/bin
+          cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
+          chmod +x /data/cetlocron/bin/demoStudent.sh
       - name: Sync code
         run: |
           mkdir -p "$APP_DIR"
@@ -34,6 +39,11 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - working-directory: /apps/local/cetlocron/data/apps/demoStudent
         run: uv sync
+      - name: Ensure cron job is installed
+        run: |
+          CRON_MARKER="# demoStudent-cron"
+          CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.`date +\%Y_\%m_\%d`.out 2>&1 $CRON_MARKER"
+          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" ; echo "$CRON_LINE" ) | crontab -
 
   deploy-prod:
     needs: test
@@ -46,6 +56,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+
+      - name: Install/update demoStudent.sh script
+        run: |
+          mkdir -p /data/cetlocron/bin
+          cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
+          chmod +x /data/cetlocron/bin/demoStudent.sh
       - name: Sync code
         run: |
           mkdir -p "$APP_DIR"
@@ -53,3 +69,9 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - working-directory: /apps/local/cetlocron/data/apps/demoStudent
         run: uv sync
+
+      - name: Ensure cron job is installed
+        run: |
+          CRON_MARKER="# demoStudent-cron"
+          CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.`date +\%Y_\%m_\%d`.out 2>&1 $CRON_MARKER"
+          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" ; echo "$CRON_LINE" ) | crontab -
