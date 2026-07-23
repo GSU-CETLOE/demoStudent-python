@@ -41,10 +41,9 @@ jobs:
         run: uv sync
       - name: Ensure cron job is installed
         run: |
-          CRON_MARKER="# demoStudent-cron"
-          CRON_LINE="## demoStudent cron job"
+          CRON_HEADER="## demoStudent cron job"
           CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.`date +\%Y_\%m_\%d`.out 2>&1"
-          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" ; echo "$CRON_LINE" ) | crontab -
+          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" ; echo "$CRON_HEADER" ; echo "$CRON_LINE" ) | crontab -
 
   deploy-prod:
     needs: test
@@ -73,6 +72,6 @@ jobs:
 
       - name: Ensure cron job is installed
         run: |
-          CRON_MARKER="# demoStudent-cron"
-          CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.`date +\%Y_\%m_\%d`.out 2>&1 $CRON_MARKER"
-          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" ; echo "$CRON_LINE" ) | crontab -
+          CRON_HEADER="## demoStudent cron job"
+          CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.`date +\%Y_\%m_\%d`.out 2>&1"
+          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" ; echo "$CRON_HEADER" ; echo "$CRON_LINE" ) | crontab -
