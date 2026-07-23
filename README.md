@@ -179,6 +179,20 @@ Notes on the deploy step:
   environment lives next to the deployed code, not in the runner's temporary
   checkout.
 
+### Docker Deplayment
+
+```sh
+git clone https://github.com/GSU-CETLOE/demoStudent-Python.git
+cd demoStudent-Python
+
+docker build -t demo-student:latest .
+
+docker run --rm \
+  -v $(pwd)/config.toml:/app/config.toml:ro \
+  -v $(pwd)/working:/app/working \
+  demo-student:latest run
+```
+
 ### One-time server setup (before the first deploy)
 
 ```sh
