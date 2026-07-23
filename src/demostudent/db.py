@@ -96,6 +96,21 @@ class MetricsDb:
             )
             self._connection.commit()
 
+    def clearCompleted(self, orgUnitIds: list[int]) -> int:
+        """Drop the given org units from completedCourses so they get rechecked.
+
+        Returns the number of rows actually removed.
+        """
+        if not orgUnitIds:
+            return 0
+        with self._lock:
+            cursor = self._connection.executemany(
+                "DELETE FROM completedCourses WHERE orgUnitId = ?",
+                [(orgUnitId,) for orgUnitId in orgUnitIds],
+            )
+            self._connection.commit()
+        return cursor.rowcount
+
     def importCompletedOrgUnits(self, orgUnitIds: list[int]) -> int:
         """Seed completedCourses from a plain org unit id list (legacy migration).
 

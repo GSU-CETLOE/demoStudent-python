@@ -117,6 +117,46 @@ def test_secondRunDoesNothing(config, db):
     assert summary.usersCreated == 0
 
 
+def test_recheckReverifiesCompletedCoursesWithoutDuplicating(config, db):
+    api = FakeApi(courseIds=range(300, 310))
+    runEnrollment(config, api, db, logFunc=lambda _line: None)
+    assert db.completedOrgUnitIds() == set(range(300, 310))
+
+    summary = runEnrollment(config, api, db, recheck=True, logFunc=lambda _line: None)
+    assert summary.coursesSkipped == 0
+    assert summary.coursesChecked == 10
+    assert summary.usersCreated == 0  # already enrolled, nothing recreated
+    assert db.completedOrgUnitIds() == set(range(300, 310))
+
+
+def test_recheckRecreatesEnrollmentThatWentMissing(config, db):
+    api = FakeApi(courseIds=[300])
+    runEnrollment(config, api, db, logFunc=lambda _line: None)
+    userName = next(iter(api.users))
+    del api.users[userName]  # simulate the demo student having been removed in D2L
+
+    summary = runEnrollment(config, api, db, recheck=True, logFunc=lambda _line: None)
+    assert summary.usersCreated == 1
+    assert db.completedOrgUnitIds() == {300}
+
+
+def test_recheckOnlyClearsInScopeCourses(config, db):
+    api = FakeApi(courseIds=range(300, 305))
+    runEnrollment(config, api, db, logFunc=lambda _line: None)
+
+    class NarrowApi(FakeApi):
+        def iterDescendants(self, orgUnitId, ouTypeId):
+            yield courseItem(300)
+
+    narrowApi = NarrowApi(courseIds=[300])
+    narrowApi.users = api.users
+    narrowApi.enrollments = api.enrollments
+    summary = runEnrollment(config, narrowApi, db, recheck=True, logFunc=lambda _line: None)
+    assert summary.coursesDiscovered == 1
+    assert summary.coursesChecked == 1
+    assert db.completedOrgUnitIds() == set(range(300, 305))  # others untouched
+
+
 def test_errorsAreRecordedAndOtherCoursesContinue(config, db):
     api = FakeApi(courseIds=range(300, 310), failingCourseIds={305})
     summary = runEnrollment(config, api, db, logFunc=lambda _line: None)

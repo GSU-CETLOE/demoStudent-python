@@ -117,6 +117,18 @@ def test_runCommandSecondRunSkips(configPath, storedTokens, capsys):
 
 
 @respx.mock
+def test_runCommandRecheckReprocessesCompletedCourses(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302, 303])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()  # discard the first two runs' output
+    assert main(["--config", str(configPath), "run", "--recheck"]) == 0
+    out = capsys.readouterr().out
+    assert "0 already completed, 3 to check" in out  # recheck cleared them back to pending
+
+
+@respx.mock
 def test_runCommandDryRun(configPath, storedTokens, capsys):
     mockDiscovery([301])
     respx.get(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\?userName=.*").mock(

@@ -3,9 +3,10 @@
 Adds a unique **Demo Student** user to every D2L Brightspace course offering.
 Each course gets its own user named `demo.{orgUnitId}`, created with the Demo
 Student role and enrolled in that course. Courses that already have their demo
-student are recorded in a local SQLite database and never checked again.
-Errors and run metrics are stored in the same database so a future dashboard
-can report on them.
+student are recorded in a local SQLite database and skipped on future runs,
+unless re-checked with `--recheck` (e.g. to confirm a demo student wasn't
+removed from a current-semester course). Errors and run metrics are stored in
+the same database so a future dashboard can report on them.
 
 This tool replaces the legacy PHP cron script
 [gsu-dle/add_demo_user](https://github.com/gsu-dle/add_demo_user), moving from
@@ -96,10 +97,21 @@ uv run demo-student run --semesters 3            # 3 most recent semesters
 uv run demo-student run --ou-list 2469900,2469901  # specific org units only
 uv run demo-student run --workers 16             # more worker threads
 uv run demo-student run --dry-run                # report only; change nothing
+uv run demo-student run --semesters 1 --recheck  # re-verify current semester
+uv run demo-student run --ou-list 2469900 --recheck  # re-verify one course
 ```
 
 Exit code is 0 when every course succeeded, 1 when any course errored (errors
 are stored in the database and the run continues past them).
+
+`--recheck` drops the in-scope courses (per `--semesters` or `--ou-list`)
+back to pending before the run, so already-completed courses are verified
+live against D2L again instead of being skipped. It's safe to run any time:
+each check is idempotent, so a course whose demo student is still in place
+is left untouched (`alreadyEnrolled`) and only a course whose demo student
+went missing gets recreated. Without `--recheck`, completed courses stay
+skipped until they age out of the one-year retention window (see
+[Database](#database)).
 
 ### `demo-student status`
 
@@ -136,7 +148,8 @@ Dashboards can read this file directly; the schema is stable.
 Retention: at the start of every run, rows older than one year are deleted
 from all three tables. If a pruned course ever reappears in discovery it is
 simply re-checked (found already enrolled) and re-recorded — nothing is
-enrolled twice.
+enrolled twice. To re-verify sooner than a year, use `run --recheck` instead
+of waiting on retention or editing `completedCourses` by hand.
 
 ## Log files
 

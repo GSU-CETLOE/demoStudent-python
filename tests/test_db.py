@@ -32,6 +32,24 @@ def test_completedCoursesRoundTrip(db):
     assert db.completedOrgUnitIds() == {111}
 
 
+def test_clearCompletedRemovesOnlyGivenIds(db):
+    runId = db.startRun()
+    for orgUnitId in (111, 222, 333):
+        db.markCourseCompleted(
+            orgUnitId=orgUnitId, courseName="C", courseCode="C",
+            userName=f"demo.{orgUnitId}", userId=1, runId=runId,
+        )
+    removed = db.clearCompleted([111, 222, 999])
+    assert removed == 2
+    assert db.completedOrgUnitIds() == {333}
+
+
+def test_clearCompletedWithEmptyListIsNoop(db):
+    db.importCompletedOrgUnits([111])
+    assert db.clearCompleted([]) == 0
+    assert db.completedOrgUnitIds() == {111}
+
+
 def test_markCourseCompletedIsIdempotent(db):
     runId = db.startRun()
     for _ in range(2):

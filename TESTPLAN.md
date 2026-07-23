@@ -42,6 +42,17 @@ manual testing.
       only the most recent semester
 - [ ] `uv run demo-student run --workers 16` completes noticeably faster on a
       large pending set
+- [ ] `uv run demo-student run --semesters 1 --recheck` re-processes courses
+      already marked complete for the most recent semester (summary shows
+      `0 already completed`, all in-scope courses `to check`) and reports
+      `alreadyEnrolled` for each with no API changes (verify in D2L UI)
+- [ ] `uv run demo-student run --ou-list <test-course-ou> --recheck` re-checks
+      only that one course, leaving other completed courses' rows in
+      `completedCourses` untouched
+- [ ] After unenrolling the demo user in the D2L UI (without touching the
+      local database), `run --ou-list <test-course-ou> --recheck` notices it's
+      missing and reports `enrolledExistingUser` or `createdAndEnrolled`,
+      re-enrolling it
 - [ ] Exit code is 0 on a clean run (`echo $?`)
 - [ ] Ctrl+C during a run cancels pending courses without a traceback, records
       the run as `interrupted` (visible in `status`), exits 130, and courses

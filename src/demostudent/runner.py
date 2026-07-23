@@ -2,8 +2,11 @@
 
 Courses already recorded in the database are filtered out before any API
 call is made, so repeat runs only touch courses that still need a demo
-student. Worker failures are recorded in the errors table and never stop
-the rest of the run.
+student. Pass recheck=True to drop the in-scope courses back to pending
+first, so already-completed courses get verified live against D2L again
+(ensureDemoStudent is idempotent, so this only recreates anything that's
+actually missing). Worker failures are recorded in the errors table and
+never stop the rest of the run.
 """
 
 import logging
@@ -43,6 +46,7 @@ def runEnrollment(
     recentSemesterCount: int | None = None,
     maxWorkers: int | None = None,
     dryRun: bool = False,
+    recheck: bool = False,
     logFunc: Callable[[str], None] = print,
 ) -> RunSummary:
     """Execute one full pass and persist metrics; returns the summary."""
@@ -63,6 +67,11 @@ def runEnrollment(
                      coursesChecked=0, usersCreated=0, enrollmentsCreated=0, errorCount=1)
         fileLogger.error(f"Run {runId} discovery failed: {error}")
         raise
+
+    if recheck:
+        recheckedCount = db.clearCompleted([course.orgUnitId for course in courses])
+        fileLogger.info(f"Run {runId}: recheck cleared {recheckedCount} completed courses "
+                        f"back to pending")
 
     completedIds = db.completedOrgUnitIds()
     pending = [course for course in courses if course.orgUnitId not in completedIds]

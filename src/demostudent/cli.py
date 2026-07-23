@@ -3,6 +3,8 @@
 Commands:
     demo-student auth [--manual]        obtain and store OAuth2 tokens
     demo-student run [options]          add demo students to course offerings
+                                         (--recheck re-verifies already-completed
+                                         courses instead of skipping them)
     demo-student status [--errors]      show recent runs and errors
     demo-student import-legacy FILE     seed completed courses from the legacy list
 """
@@ -53,6 +55,9 @@ def buildParser() -> argparse.ArgumentParser:
                            help="Worker thread count (default from config)")
     runParser.add_argument("--dry-run", action="store_true",
                            help="Report what would change without creating or enrolling anyone")
+    runParser.add_argument("--recheck", action="store_true",
+                           help="Re-verify in-scope courses even if already marked complete "
+                                "(use with --semesters or --ou-list to limit scope)")
 
     statusParser = subparsers.add_parser(
         "status", help="Show recent runs and metrics from the database")
@@ -98,6 +103,7 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
             recentSemesterCount=args.semesters,
             maxWorkers=args.workers,
             dryRun=args.dry_run,
+            recheck=args.recheck,
         )
     finally:
         api.close()
