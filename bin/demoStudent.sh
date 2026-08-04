@@ -1,3 +1,3 @@
 #!/bin/bash
 cd /apps/local/cetlocron/data/apps/demoStudent
-uv run demo-student run
+~/.local/bin/uv run demo-student run
