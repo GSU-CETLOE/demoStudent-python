@@ -14,7 +14,6 @@ using D2L's rotating refresh tokens; no browser is needed again unless
 the refresh token is revoked or expires.
 """
 
-import fcntl
 import http.server
 import json
 import os
@@ -35,8 +34,21 @@ import httpx
 
 from .config import AppConfig
 
+try:  # POSIX
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows only
+    fcntl = None  # type: ignore[assignment]
+
+try:  # Windows
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised on POSIX only
+    msvcrt = None  # type: ignore[assignment]
+
 AUTHORIZATION_URL = "https://auth.brightspace.com/oauth2/auth"
 TOKEN_URL = "https://auth.brightspace.com/core/connect/token"
+
+# How often the Windows lock path retries; it has no blocking acquire.
+LOCK_POLL_SECONDS = 0.05
 
 # Refresh this many seconds before the access token actually expires.
 REFRESH_MARGIN_SECONDS = 60
@@ -45,6 +57,34 @@ CALLBACK_TIMEOUT_SECONDS = 300
 
 CERT_FILENAME = "localhost.pem"
 KEY_FILENAME = "localhost-key.pem"
+
+
+def _acquireFileLock(handle) -> None:
+    """Block until this process holds an exclusive lock on an open file.
+
+    Uses whichever primitive the platform provides. If neither exists the
+    call is a no-op: the lock only narrows the window for a concurrent
+    refresh, and TokenManager recovers from losing that race anyway.
+    """
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    elif msvcrt is not None:  # pragma: no cover - Windows only
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(LOCK_POLL_SECONDS)
+
+
+def _releaseFileLock(handle) -> None:
+    """Release a lock taken by _acquireFileLock."""
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    elif msvcrt is not None:  # pragma: no cover - Windows only
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class AuthError(Exception):
@@ -182,16 +222,17 @@ class TokenStore:
         D2L rotates refresh tokens, so two processes refreshing at once means
         the loser's token is invalidated mid-run. The lock lives in a sibling
         file and is released by the OS if the holder dies, so it cannot go
-        stale.
+        stale. Opened append-mode so the handle is never truncated out from
+        under a lock another process is holding.
         """
         lockPath = self._tokenPath.with_name(f"{self._tokenPath.name}.lock")
         lockPath.parent.mkdir(parents=True, exist_ok=True)
-        with open(lockPath, "w") as lockFile:
-            fcntl.flock(lockFile, fcntl.LOCK_EX)
+        with open(lockPath, "a+") as lockFile:
+            _acquireFileLock(lockFile)
             try:
                 yield
             finally:
-                fcntl.flock(lockFile, fcntl.LOCK_UN)
+                _releaseFileLock(lockFile)
 
 
 class TokenManager:

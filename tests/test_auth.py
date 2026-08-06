@@ -1,8 +1,8 @@
 """Tests for OAuth2 flows, token storage, and token refresh."""
 
-import fcntl
 import json
 import os
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
@@ -11,6 +11,7 @@ import httpx
 import pytest
 import respx
 
+from demostudent import auth
 from demostudent.auth import (
     AUTHORIZATION_URL,
     TOKEN_URL,
@@ -143,8 +144,9 @@ def test_tokenStoreRoundTripAndPermissions(tmp_path):
     tokens = TokenSet(accessToken="a", refreshToken="r", expiresAt=123.0)
     store.save(tokens)
     assert store.load() == tokens
-    mode = os.stat(tmp_path / "working" / "token.json").st_mode & 0o777
-    assert mode == 0o600
+    if sys.platform != "win32":  # Windows has no POSIX mode bits to assert on
+        mode = os.stat(tmp_path / "working" / "token.json").st_mode & 0o777
+        assert mode == 0o600
 
 
 def test_tokenStoreRejectsCorruptFile(tmp_path):
@@ -161,7 +163,55 @@ def test_tokenStoreLeavesNoTemporaryFileBehind(tmp_path):
     assert [p.name for p in (tmp_path / "working").iterdir() if p.suffix == ".tmp"] == []
 
 
+def test_exclusiveLockIsReentrantAcrossCalls(tmp_path):
+    """Portable check: acquire and release repeatedly without error."""
+    store = TokenStore(tmp_path / "working" / "token.json")
+    for _ in range(3):
+        with store.exclusiveLock():
+            pass
+    assert (tmp_path / "working" / "token.json.lock").is_file()
+
+
+def test_fileLockUsesMsvcrtWhenFlockIsAbsent(tmp_path, monkeypatch):
+    """The Windows branch: retry until granted, then unlock. Verified here
+    because CI and development are POSIX-only."""
+    calls = []
+
+    class FakeMsvcrt:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        def locking(self, fileno, mode, nbytes):
+            calls.append(mode)
+            if mode == self.LK_NBLCK and calls.count(self.LK_NBLCK) == 1:
+                raise OSError("held by another process")
+
+    monkeypatch.setattr(auth, "fcntl", None)
+    monkeypatch.setattr(auth, "msvcrt", FakeMsvcrt())
+    monkeypatch.setattr(auth, "LOCK_POLL_SECONDS", 0)
+
+    store = TokenStore(tmp_path / "working" / "token.json")
+    with store.exclusiveLock():
+        pass
+
+    assert calls == [FakeMsvcrt.LK_NBLCK, FakeMsvcrt.LK_NBLCK, FakeMsvcrt.LK_UNLCK]
+
+
+def test_fileLockDegradesWhenNoPrimitiveExists(tmp_path, monkeypatch):
+    """An exotic platform loses the lock, not the ability to run: the
+    invalid_grant recovery still covers correctness."""
+    monkeypatch.setattr(auth, "fcntl", None)
+    monkeypatch.setattr(auth, "msvcrt", None)
+
+    store = TokenStore(tmp_path / "working" / "token.json")
+    with store.exclusiveLock():
+        pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock specifics; Windows uses msvcrt")
 def test_exclusiveLockExcludesOtherHolders(tmp_path):
+    import fcntl
+
     store = TokenStore(tmp_path / "working" / "token.json")
     lockPath = tmp_path / "working" / "token.json.lock"
 
