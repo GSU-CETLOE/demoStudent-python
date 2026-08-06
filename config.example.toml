@@ -23,7 +23,13 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 #   users:own_profile:read           the whoami check run by `demo-student auth`
 # scope = "enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read"
 #
-# roleId = 783                    # the "Demo Student" role id
+# Scopes are fixed when the token is issued and do not change on refresh:
+# after editing this line, re-run `demo-student auth`. Scopes alone are not
+# enough — the signed-in account's Brightspace role must also have authority
+# in every course offering. See "Brightspace access requirements" in README.md.
+#
+# roleId = 783                    # the "Demo Student" role id; must NOT be a
+#                                 # cascading role (see README.md)
 # orgOu = 1070555                 # organization org unit that contains the semesters
 # semesterOuType = 5              # org unit type id for semesters
 # courseOfferingOuType = 3        # org unit type id for course offerings

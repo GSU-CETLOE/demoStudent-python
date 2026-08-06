@@ -56,33 +56,6 @@ OAuth 2.0). The registered redirect URI must match `redirectUri` exactly
 provided via the `DEMO_STUDENT_CLIENT_SECRET` environment variable instead of
 the file. All other settings have defaults — see `config.example.toml`.
 
-#### Minimum API scope
-
-`scope` defaults to `core:*:*`, D2L's catch-all. The tool only ever calls six
-routes, so the OAuth2 application can be registered with just these scopes:
-
-| Scope | Needed for |
-| --- | --- |
-| `organizations:organization:read` | Org unit lookup, children, and paged descendants during discovery |
-| `users:userdata:read` | Finding a course's demo student by username |
-| `users:userdata:create` | Creating the demo student |
-| `enrollment:orgunit:read` | Checking whether the demo student is already enrolled |
-| `enrollment:orgunit:create` | Enrolling the demo student |
-| `users:own_profile:read` | The `whoami` identity check run by `demo-student auth` |
-
-As one scope string (spaces separate scopes, commas separate permissions on the
-same resource):
-
-```
-enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read
-```
-
-Register that on the OAuth2 application, then set `scope` in `config.toml` to
-the same value — a requested scope that isn't registered fails authorization.
-`GET /d2l/api/versions/`, used for API version negotiation, needs no scope.
-Scopes only gate which routes the application may call; the signed-in user's
-role still has to permit creating users and managing enrollments.
-
 Runtime state lives in the `working/` directory (configurable via
 `workingDir`; gitignored):
 
@@ -93,6 +66,124 @@ working/
   logs/                 monthly log files (dir name via `logDir`)
   localhost.pem(-key)   mkcert certificate for the browser auth flow
 ```
+
+## Brightspace access requirements
+
+Two independent things must both be granted, and they fail in different ways:
+**OAuth2 scopes** decide which routes the application may call at all, while
+the **signed-in account's role** decides what it may do in a given org unit.
+A correct scope with an inadequate role still returns 403 on every course.
+
+### OAuth2 scopes
+
+`scope` defaults to `core:*:*`, D2L's catch-all. The tool only ever calls these
+nine routes, so the OAuth2 application can be registered with just the scopes
+below:
+
+| Route | Scope |
+| --- | --- |
+| `GET /d2l/api/versions/` | *(none — version negotiation is unauthenticated)* |
+| `GET /lp/{v}/users/whoami` | `users:own_profile:read` |
+| `GET /lp/{v}/orgstructure/{ou}` | `organizations:organization:read` |
+| `GET /lp/{v}/orgstructure/{ou}/children/` | `organizations:organization:read` |
+| `GET /lp/{v}/orgstructure/{ou}/descendants/paged/` | `organizations:organization:read` |
+| `GET /lp/{v}/users/?userName=` | `users:userdata:read` |
+| `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` | `enrollment:orgunit:read` |
+| `POST /lp/{v}/users/` | `users:userdata:create` |
+| `POST /lp/{v}/enrollments/` | `enrollment:orgunit:create` |
+
+As one scope string (spaces separate scopes, commas separate permissions on the
+same resource):
+
+```
+enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read
+```
+
+Register that on the OAuth2 application, then set `scope` in `config.toml` to
+the same value — a requested scope that isn't registered fails authorization.
+Scopes are fixed at authorization time and **do not change on refresh**: after
+editing `scope`, re-run `demo-student auth` or the stored token keeps the old
+set.
+
+### Brightspace role and permissions
+
+Two different roles are involved. Only the first one should ever cascade:
+
+| Role | Who holds it | Requirement |
+| --- | --- | --- |
+| The service account's role | The account signed in via `demo-student auth` | Needs the permissions below **in every course offering** the tool touches |
+| The demo student role (`roleId`, default 783) | The `demo.{orgUnitId}` users the tool creates | Just needs to be assignable in course offerings. **Must not cascade** — see below |
+
+The service account's role must permit it to:
+
+- read the org structure (children and descendants) from `orgOu` downward,
+  to discover course offerings;
+- look up users by username, and create users, at the organization level;
+- read a user's enrollments;
+- **enroll users into each course offering.**
+
+Configure these under **Admin Tools > Roles and Permissions**. The exact
+permission names vary by Brightspace version, so locate them by tool (Users,
+Enrollment, Classlist) rather than by copying labels from here.
+
+#### Access must reach every course offering
+
+This is the failure mode worth understanding, because it does not look like a
+permission problem in the logs — it looks like the tool is broken.
+
+Permissions in Brightspace are granted per role **per org unit type**. A role
+can be enrolled at the Organization or Semester level and still have no
+authority in the course offerings beneath it, because its permissions were
+never enabled for the Course Offering type. When that happens the service
+account is denied *everything* in those courses — reading the classlist,
+reading an enrollment, and creating one — while working normally in courses it
+does have access to. Discovery still succeeds, so the run proceeds and then
+fails per-course with `403 Not Authorized`.
+
+Either grant the role genuine cascading authority over Course Offering org
+units, or enrol the service account directly in every course. Enrolling
+course-by-course works but silently leaves gaps: any course added later is
+inaccessible until someone remembers to enroll the account in it too.
+
+To check whether the account can reach a specific course, request its
+classlist — `200` means it has access there, `403` means it does not:
+
+```
+GET /d2l/api/le/{leVersion}/{orgUnitId}/classlist/
+```
+
+To list every course the account can currently reach, page through its own
+enrollments (`{callerUserId}` comes from `whoami`):
+
+```
+GET /d2l/api/lp/{lpVersion}/enrollments/users/{callerUserId}/orgUnits/
+```
+
+#### Do not let the demo student role cascade
+
+If the demo student role is made to cascade from the organization down, every
+demo student appears to be enrolled in every course. The enrollment check then
+reports `alreadyEnrolled` everywhere and the tool stops enrolling anyone, while
+appearing to succeed. Cascading is for the service account's role only.
+
+#### Reading a 403
+
+The response body distinguishes the two causes, and a 404 is not a failure at
+all:
+
+| Response | Meaning |
+| --- | --- |
+| `{"Errors":[{"Message":"Not Authorized"}]}` | Role permission — the account lacks authority in that org unit |
+| `Insufficient scope to call API. Required: <scope>` | OAuth2 scope — D2L names the missing scope; add it and re-run `demo-student auth` |
+| `404 {"Errors":[{"Message":"Resource Not Found"}]}` | The account *does* have access; the user simply is not enrolled there. Handled normally, not an error |
+
+Note that the tool checks enrollment from the user side
+(`/enrollments/users/{userId}/orgUnits/`) rather than the org unit side
+(`/enrollments/orgUnits/{ou}/users/{userId}`). Both need only
+`enrollment:orgunit:read`, but the org unit side additionally requires
+authority inside that course offering, so it returns 403 in exactly the courses
+where the role has not been granted. Reading from the user side means the tool
+needs course-level authority only to *enroll*, not to check.
 
 ## Commands
 
