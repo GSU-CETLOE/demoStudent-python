@@ -10,7 +10,19 @@ clientSecret = "your-oauth2-client-secret"
 redirectUri = "https://localhost:8443/callback"  # must match the registered redirect URI
 
 # --- optional (defaults shown) ---
-# scope = "core:*:*"
+# scope = "core:*:*"              # catch-all; grants far more than this tool uses
+#
+# Minimum scope this tool actually needs. Register these on the OAuth2
+# application first, then uncomment the line below (spaces separate scopes,
+# commas separate permissions on the same resource):
+#   organizations:organization:read  org unit lookup, children, descendants
+#   users:userdata:read              find the demo student by username
+#   users:userdata:create            create the demo student
+#   enrollment:orgunit:read          check the demo student's enrollment
+#   enrollment:orgunit:create        enroll the demo student
+#   users:own_profile:read           the whoami check run by `demo-student auth`
+# scope = "enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read"
+#
 # roleId = 783                    # the "Demo Student" role id
 # orgOu = 1070555                 # organization org unit that contains the semesters
 # semesterOuType = 5              # org unit type id for semesters

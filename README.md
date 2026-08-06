@@ -56,6 +56,33 @@ OAuth 2.0). The registered redirect URI must match `redirectUri` exactly
 provided via the `DEMO_STUDENT_CLIENT_SECRET` environment variable instead of
 the file. All other settings have defaults — see `config.example.toml`.
 
+#### Minimum API scope
+
+`scope` defaults to `core:*:*`, D2L's catch-all. The tool only ever calls six
+routes, so the OAuth2 application can be registered with just these scopes:
+
+| Scope | Needed for |
+| --- | --- |
+| `organizations:organization:read` | Org unit lookup, children, and paged descendants during discovery |
+| `users:userdata:read` | Finding a course's demo student by username |
+| `users:userdata:create` | Creating the demo student |
+| `enrollment:orgunit:read` | Checking whether the demo student is already enrolled |
+| `enrollment:orgunit:create` | Enrolling the demo student |
+| `users:own_profile:read` | The `whoami` identity check run by `demo-student auth` |
+
+As one scope string (spaces separate scopes, commas separate permissions on the
+same resource):
+
+```
+enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read
+```
+
+Register that on the OAuth2 application, then set `scope` in `config.toml` to
+the same value — a requested scope that isn't registered fails authorization.
+`GET /d2l/api/versions/`, used for API version negotiation, needs no scope.
+Scopes only gate which routes the application may call; the signed-in user's
+role still has to permit creating users and managing enrollments.
+
 Runtime state lives in the `working/` directory (configurable via
 `workingDir`; gitignored):
 

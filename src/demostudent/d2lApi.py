@@ -161,15 +161,35 @@ class D2lApiClient:
         return response.json()
 
     def getEnrollment(self, orgUnitId: int, userId: int) -> dict[str, Any] | None:
-        """A user's enrollment in an org unit; None when not enrolled."""
-        response = self._request(
-            "GET",
-            f"/d2l/api/lp/{self._lp()}/enrollments/orgUnits/{orgUnitId}/users/{userId}",
-            allowNotFound=True,
-        )
-        if response.status_code == 404:
-            return None
-        return response.json()
+        """A user's enrollment in an org unit; None when not enrolled.
+
+        Asks from the user side rather than the org unit side. Both
+        directions need only enrollment:orgunit:read, but the org unit side
+        (/enrollments/orgUnits/{orgUnitId}/users/{userId}) additionally
+        requires the caller to hold a role inside that course offering,
+        which the API account does not, so it answers 403 for every course.
+        A demo student belongs to one course, so this list stays short.
+        """
+        bookmark: str | None = None
+        while True:
+            params: dict[str, Any] = {"bookmark": bookmark} if bookmark else {}
+            response = self._request(
+                "GET",
+                f"/d2l/api/lp/{self._lp()}/enrollments/users/{userId}/orgUnits/",
+                params=params,
+                allowNotFound=True,
+            )
+            if response.status_code == 404:
+                return None
+            page = response.json()
+            for item in page["Items"]:
+                if item["OrgUnit"]["Id"] == orgUnitId:
+                    return {"OrgUnitId": orgUnitId, "UserId": userId,
+                            "RoleId": item["Role"]["Id"]}
+            pagingInfo = page["PagingInfo"]
+            if not pagingInfo.get("HasMoreItems") or not page["Items"]:
+                return None
+            bookmark = pagingInfo.get("Bookmark")
 
     def createUser(
         self,

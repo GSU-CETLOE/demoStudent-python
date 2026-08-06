@@ -18,3 +18,7 @@ working/
 
 # Local configuration with secrets
 config.toml
+.env
+
+# Run reports
+*-report.csv

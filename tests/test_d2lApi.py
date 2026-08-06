@@ -88,11 +88,33 @@ def test_getUserByUsernameMissingReturnsNone(api):
     assert api.getUserByUsername("demo.404") is None
 
 
+def enrollmentItem(orgUnitId: int, roleId: int) -> dict:
+    """One entry as /enrollments/users/{userId}/orgUnits/ returns it."""
+    return {
+        "OrgUnit": {"Id": orgUnitId, "Type": {"Id": 3, "Code": "Course Offering"},
+                    "Name": f"Course {orgUnitId}", "Code": f"CO.{orgUnitId}"},
+        "Role": {"Id": roleId, "Code": None, "Name": "Demo Student"},
+    }
+
+
 @respx.mock
 def test_getEnrollmentMissingReturnsNone(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/orgUnits/55/users/9001").mock(
+    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
         return_value=httpx.Response(404)
+    )
+    assert api.getEnrollment(55, 9001) is None
+
+
+@respx.mock
+def test_getEnrollmentNotInThatOrgUnitReturnsNone(api):
+    """The org-level enrollment every created user gets is not a course enrollment."""
+    mockVersions()
+    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "1070555", "HasMoreItems": False},
+            "Items": [enrollmentItem(1070555, 783)],
+        })
     )
     assert api.getEnrollment(55, 9001) is None
 
@@ -100,14 +122,36 @@ def test_getEnrollmentMissingReturnsNone(api):
 @respx.mock
 def test_getEnrollmentFound(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/orgUnits/55/users/9001").mock(
-        return_value=httpx.Response(
-            200, json={"OrgUnitId": 55, "UserId": 9001, "RoleId": 783, "IsCascading": False}
-        )
+    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "55", "HasMoreItems": False},
+            "Items": [enrollmentItem(1070555, 783), enrollmentItem(55, 783)],
+        })
     )
     enrollment = api.getEnrollment(55, 9001)
     assert enrollment is not None
     assert enrollment["RoleId"] == 783
+    assert enrollment["OrgUnitId"] == 55
+
+
+@respx.mock
+def test_getEnrollmentFollowsPagingBookmarks(api):
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/")
+    route.side_effect = [
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "page1", "HasMoreItems": True},
+            "Items": [enrollmentItem(1070555, 783)],
+        }),
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "page2", "HasMoreItems": False},
+            "Items": [enrollmentItem(55, 783)],
+        }),
+    ]
+    enrollment = api.getEnrollment(55, 9001)
+    assert enrollment is not None
+    assert enrollment["RoleId"] == 783
+    assert route.calls[1].request.url.params["bookmark"] == "page1"
 
 
 @respx.mock
