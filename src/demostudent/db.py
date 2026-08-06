@@ -148,19 +148,21 @@ class MetricsDb:
         usersCreated: int,
         enrollmentsCreated: int,
         errorCount: int,
-    ) -> None:
-        """Finalize a run row with its outcome counts."""
+    ) -> str:
+        """Finalize a run row with its outcome counts; returns the finish timestamp."""
+        finishedAt = utcNow()
         with self._lock:
             self._connection.execute(
                 "UPDATE runs SET finishedAt = ?, status = ?, coursesDiscovered = ?,"
                 " coursesSkipped = ?, coursesChecked = ?, usersCreated = ?,"
                 " enrollmentsCreated = ?, errorCount = ? WHERE runId = ?",
                 (
-                    utcNow(), status, coursesDiscovered, coursesSkipped,
+                    finishedAt, status, coursesDiscovered, coursesSkipped,
                     coursesChecked, usersCreated, enrollmentsCreated, errorCount, runId,
                 ),
             )
             self._connection.commit()
+        return finishedAt
 
     def recordError(
         self,

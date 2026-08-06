@@ -7,7 +7,7 @@ import pytest
 from demostudent.config import AppConfig
 from demostudent.db import MetricsDb
 from demostudent.d2lApi import D2lApiError
-from demostudent.runner import runEnrollment
+from demostudent.runner import formatDuration, runEnrollment
 
 
 @pytest.fixture
@@ -257,6 +257,29 @@ def test_activityOlderThanAYearIsPrunedAtRunStart(config, db):
     assert db.completedOrgUnitIds() == {300}
     # Only the current run remains
     assert [run["status"] for run in db.recentRuns(limit=10)] == ["completed"]
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (0.42, "0.4s"),
+    (9.94, "9.9s"),
+    (10.0, "10s"),
+    (42.6, "43s"),
+    (252.0, "4m 12s"),
+    (3600.0, "1h 00m 00s"),
+    (7530.0, "2h 05m 30s"),
+])
+def test_formatDuration(seconds, expected):
+    assert formatDuration(seconds) == expected
+
+
+def test_summaryReportsFinishTimeAndElapsed(config, db):
+    api = FakeApi(courseIds=[300, 301])
+    summary = runEnrollment(config, api, db, logFunc=lambda _line: None)
+
+    assert summary.elapsedSeconds >= 0
+    assert summary.elapsed == formatDuration(summary.elapsedSeconds)
+    # The reported finish time is the one persisted for the run
+    assert summary.finishedAt == db.recentRuns(limit=1)[0]["finishedAt"]
 
 
 def test_discoveryFailureRecordsErrorAndFailsRun(config, db):

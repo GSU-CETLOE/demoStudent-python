@@ -117,6 +117,8 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
     print(f"  Users created:        {summary.usersCreated}")
     print(f"  Enrollments created:  {summary.enrollmentsCreated}")
     print(f"  Errors:               {summary.errorCount}")
+    print(f"  Finished (UTC):       {summary.finishedAt}")
+    print(f"  Elapsed:              {summary.elapsed}")
     if summary.status == "interrupted":
         return 130
     return 0 if summary.errorCount == 0 else 1

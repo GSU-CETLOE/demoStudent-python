@@ -187,7 +187,8 @@ def test_interruptedRunExits130(configPath, storedTokens, capsys, monkeypatch):
     def fakeRunEnrollment(*args, **kwargs):
         return RunSummary(runId=1, status="interrupted", coursesDiscovered=10,
                           coursesSkipped=0, coursesChecked=4, usersCreated=4,
-                          enrollmentsCreated=4, errorCount=0)
+                          enrollmentsCreated=4, errorCount=0,
+                          finishedAt="2026-08-06T12:00:00+00:00", elapsedSeconds=252.0)
 
     monkeypatch.setattr("demostudent.cli.runEnrollment", fakeRunEnrollment)
     exitCode = main(["--config", str(configPath), "run"])

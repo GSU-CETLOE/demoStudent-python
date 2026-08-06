@@ -163,11 +163,15 @@ class D2lApiClient:
     def getEnrollment(self, orgUnitId: int, userId: int) -> dict[str, Any] | None:
         """A user's enrollment in an org unit; None when not enrolled.
 
-        Asks from the user side rather than the org unit side. Both
-        directions need only enrollment:orgunit:read, but the org unit side
-        (/enrollments/orgUnits/{orgUnitId}/users/{userId}) additionally
-        requires the caller to hold a role inside that course offering,
-        which the API account does not, so it answers 403 for every course.
+        Asks from the user side rather than the org unit side. Both need
+        only enrollment:orgunit:read, but the org unit side
+        (/enrollments/orgUnits/{orgUnitId}/users/{userId}) returns 403 in
+        any course the service account cannot reach, which aborts the
+        course; the user side returns 200 and simply omits those courses,
+        so the run keeps going. Note the tradeoff: an omitted course reads
+        back as "not enrolled" rather than failing, so if the account lacks
+        access the check is silently wrong and the 403 surfaces on the
+        enrollment write instead. See "Course Access Options" in README.md.
         A demo student belongs to one course, so this list stays short.
         """
         bookmark: str | None = None

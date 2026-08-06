@@ -107,53 +107,73 @@ set.
 
 ### Brightspace role and permissions
 
-Two different roles are involved. Only the first one should ever cascade:
+Two different roles are involved:
 
-| Role | Who holds it | Requirement |
-| --- | --- | --- |
-| The service account's role | The account signed in via `demo-student auth` | Needs the permissions below **in every course offering** the tool touches |
-| The demo student role (`roleId`, default 783) | The `demo.{orgUnitId}` users the tool creates | Just needs to be assignable in course offerings. **Must not cascade** — see below |
+| Role | Who holds it |
+| --- | --- |
+| The service account's role | The account signed in via `demo-student auth` (at GSU: `CETLOE API`) |
+| The demo student role (`roleId`, default 783) | The `demo.{orgUnitId}` users the tool creates |
 
-The service account's role must permit it to:
+Configure the service account's role under **Admin Tools > Roles and
+Permissions > Edit Permissions**, which grids every permission against the org
+unit types it can be granted at.
 
-- read the org structure (children and descendants) from `orgOu` downward,
-  to discover course offerings;
-- look up users by username, and create users, at the organization level;
-- read a user's enrollments;
-- **enroll users into each course offering.**
+#### Required permissions
 
-Configure these under **Admin Tools > Roles and Permissions**. The exact
-permission names vary by Brightspace version, so locate them by tool (Users,
-Enrollment, Classlist) rather than by copying labels from here.
+Names below are as they appear in Brightspace and are grouped by tool.
 
-#### Access must reach every course offering
+| Tool | Permission | Grant at | Needed for |
+| --- | --- | --- | --- |
+| Users | **Enroll '{demo student role}'** | Course Offering | `POST /lp/{v}/enrollments/` — enrolling the demo student |
+| Users | **Search for '{demo student role}'** | Organization, Course Offering | `GET /lp/{v}/users/?userName=` — finding `demo.{orgUnitId}` |
+| Users | **View User Enrollments** | Organization, Semester, Course Template, Course Offering, Department | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` — the enrollment check |
+| Users | **Create a User in the Database** | Organization, Department *(the only types offered)* | `POST /lp/{v}/users/` — creating the demo student |
+| Users | View the Users' Email Address, View Users' Contact Information | Organization | the `ExternalEmail` set on creation |
+| Classlist | **Has Access to the Classlist** | Course Offering | enrollment reads and writes inside a course |
+| Classlist | **Change Enrollment** | Course Offering | Brightspace's usual pairing for enrollment changes |
 
-This is the failure mode worth understanding, because it does not look like a
-permission problem in the logs — it looks like the tool is broken.
+`Enroll '...'` and `Search for '...'` are **per-target-role** permissions —
+Brightspace lists one of each for every role in the tenant, named after that
+role. They must be enabled for the demo student role specifically. Changing
+`roleId` in the config means enabling a different pair.
 
-Permissions in Brightspace are granted per role **per org unit type**. A role
-can be enrolled at the Organization or Semester level and still have no
-authority in the course offerings beneath it, because its permissions were
-never enabled for the Course Offering type. When that happens the service
-account is denied *everything* in those courses — reading the classlist,
-reading an enrollment, and creating one — while working normally in courses it
-does have access to. Discovery still succeeds, so the run proceeds and then
-fails per-course with `403 Not Authorized`.
+#### Course Access Options (easy to miss)
 
-Either grant the role genuine cascading authority over Course Offering org
-units, or enrol the service account directly in every course. Enrolling
-course-by-course works but silently leaves gaps: any course added later is
-inaccessible until someone remembers to enroll the account in it too.
+On the role's own settings page, **Course Access Options** must all be enabled:
 
-To check whether the account can reach a specific course, request its
-classlist — `200` means it has access there, `403` means it does not:
+- Access inactive courses
+- Access past courses
+- **Access future courses**
+
+These gate the role by the *state* of a course rather than by permission, and
+they are set apart from the permissions grid, so they are easy to overlook.
+Without them the service account is blind to entire categories of course —
+most importantly courses in an upcoming semester, which have not started yet
+and are therefore *future* courses. Since the tool's whole job is to seed demo
+students into upcoming semesters, this affects exactly the courses it most
+needs to reach.
+
+The symptom is indistinguishable from a missing permission: discovery finds the
+courses (org structure is readable regardless), then every call inside them
+fails with `403 Not Authorized`. Every permission in the table above can be
+correctly enabled and the tool will still fail on every affected course.
+
+Worse, the failure is not always loud. The enrollment check reads from the user
+side, and Brightspace **silently omits inaccessible courses from that listing
+instead of returning an error** — so an existing enrollment in an unreachable
+course reads back as "not enrolled", and the tool tries to enroll a user who is
+already enrolled. What surfaces is a 403 on the write, which points at the
+wrong thing.
+
+To check whether the account can reach a course, request its classlist —
+`200` means it has access, `403` means it does not:
 
 ```
 GET /d2l/api/le/{leVersion}/{orgUnitId}/classlist/
 ```
 
-To list every course the account can currently reach, page through its own
-enrollments (`{callerUserId}` comes from `whoami`):
+Be aware when using the account's own enrollment listing to audit reach that it
+is filtered the same way, and so under-reports:
 
 ```
 GET /d2l/api/lp/{lpVersion}/enrollments/users/{callerUserId}/orgUnits/
@@ -173,17 +193,22 @@ all:
 
 | Response | Meaning |
 | --- | --- |
-| `{"Errors":[{"Message":"Not Authorized"}]}` | Role permission — the account lacks authority in that org unit |
+| `{"Errors":[{"Message":"Not Authorized"}]}` | Role permission **or** Course Access Options — the account has no authority in that org unit |
 | `Insufficient scope to call API. Required: <scope>` | OAuth2 scope — D2L names the missing scope; add it and re-run `demo-student auth` |
 | `404 {"Errors":[{"Message":"Resource Not Found"}]}` | The account *does* have access; the user simply is not enrolled there. Handled normally, not an error |
 
-Note that the tool checks enrollment from the user side
+The 403/404 split is a useful probe: ask for a user you know is *not* enrolled
+in a course. A 404 means the account can see into that course, a 403 means it
+cannot.
+
+The tool checks enrollment from the user side
 (`/enrollments/users/{userId}/orgUnits/`) rather than the org unit side
 (`/enrollments/orgUnits/{ou}/users/{userId}`). Both need only
-`enrollment:orgunit:read`, but the org unit side additionally requires
-authority inside that course offering, so it returns 403 in exactly the courses
-where the role has not been granted. Reading from the user side means the tool
-needs course-level authority only to *enroll*, not to check.
+`enrollment:orgunit:read`, but the org unit side returns 403 outright in any
+course the account cannot reach, whereas the user side returns 200 and omits
+those courses — so the check degrades to a wrong answer rather than a hard
+failure. Neither route escapes the access requirement; the user side just keeps
+the run going.
 
 ## Commands
 

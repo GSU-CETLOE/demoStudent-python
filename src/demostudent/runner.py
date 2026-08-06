@@ -10,6 +10,7 @@ never stop the rest of the run.
 """
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
@@ -24,6 +25,19 @@ from .logs import LOGGER_NAME
 fileLogger = logging.getLogger(LOGGER_NAME)
 
 
+def formatDuration(seconds: float) -> str:
+    """Elapsed time for display, e.g. '0.4s', '42s', '4m 12s', '2h 05m 30s'."""
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    hours, remainder = divmod(int(round(seconds)), 3600)
+    minutes, wholeSeconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {wholeSeconds:02d}s"
+    if minutes:
+        return f"{minutes}m {wholeSeconds:02d}s"
+    return f"{wholeSeconds}s"
+
+
 @dataclass(frozen=True)
 class RunSummary:
     """Aggregate outcome of one run, mirroring the runs table."""
@@ -36,6 +50,13 @@ class RunSummary:
     usersCreated: int
     enrollmentsCreated: int
     errorCount: int
+    finishedAt: str
+    elapsedSeconds: float
+
+    @property
+    def elapsed(self) -> str:
+        """Elapsed wall-clock time, formatted for display."""
+        return formatDuration(self.elapsedSeconds)
 
 
 def runEnrollment(
@@ -52,6 +73,7 @@ def runEnrollment(
     """Execute one full pass and persist metrics; returns the summary."""
     pruned = db.pruneOldActivity()
     runId = db.startRun()
+    startedMonotonic = time.monotonic()
     fileLogger.info(f"Run {runId} started (dryRun={dryRun})")
     if pruned:
         fileLogger.info(f"Run {runId}: pruned {pruned} database rows older than a year")
@@ -141,17 +163,20 @@ def runEnrollment(
     else:
         status = "completed"
 
-    db.finishRun(
+    finishedAt = db.finishRun(
         runId, status=status, coursesDiscovered=len(courses), coursesSkipped=skipped,
         coursesChecked=checked, usersCreated=usersCreated,
         enrollmentsCreated=enrollmentsCreated, errorCount=errorCount,
     )
+    elapsedSeconds = time.monotonic() - startedMonotonic
     fileLogger.info(
         f"Run {runId} finished: status={status}, discovered={len(courses)}, "
         f"skipped={skipped}, checked={checked}, usersCreated={usersCreated}, "
-        f"enrollmentsCreated={enrollmentsCreated}, errors={errorCount}")
+        f"enrollmentsCreated={enrollmentsCreated}, errors={errorCount}, "
+        f"elapsed={formatDuration(elapsedSeconds)}")
     return RunSummary(
         runId=runId, status=status, coursesDiscovered=len(courses),
         coursesSkipped=skipped, coursesChecked=checked, usersCreated=usersCreated,
         enrollmentsCreated=enrollmentsCreated, errorCount=errorCount,
+        finishedAt=finishedAt, elapsedSeconds=elapsedSeconds,
     )
