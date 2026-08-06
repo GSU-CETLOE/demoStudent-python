@@ -61,11 +61,20 @@ Runtime state lives in the `working/` directory (configurable via
 
 ```
 working/
-  db/demoStudent.db     SQLite database (completed courses, runs, errors)
-  token/token.json      OAuth2 token store
-  logs/                 monthly log files (dir name via `logDir`)
-  localhost.pem(-key)   mkcert certificate for the browser auth flow
+  db/demoStudent.db      SQLite database (completed courses, runs, errors)
+  token/token.json       OAuth2 token store
+  token/token.json.lock  guards token refresh between concurrent processes
+  logs/                  monthly log files (dir name via `logDir`)
+  localhost.pem(-key)    mkcert certificate for the browser auth flow
 ```
+
+Two runs sharing a `workingDir` are safe. D2L rotates refresh tokens — using
+one invalidates it — so without coordination a second process refreshing would
+kill the first process's token mid-run, failing every remaining course with
+`invalid_grant`. Refreshes therefore take an inter-process lock, and a process
+that finds its own refresh token already spent adopts the pair the other one
+wrote instead of failing. The lock is released by the OS if a process dies, so
+it cannot go stale.
 
 ## Brightspace access requirements
 

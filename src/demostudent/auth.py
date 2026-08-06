@@ -14,8 +14,10 @@ using D2L's rotating refresh tokens; no browser is needed again unless
 the refresh token is revoked or expires.
 """
 
+import fcntl
 import http.server
 import json
+import os
 import secrets
 import shutil
 import ssl
@@ -23,9 +25,10 @@ import subprocess
 import threading
 import time
 import webbrowser
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -134,7 +137,13 @@ def refreshTokenSet(config: AppConfig, refreshToken: str) -> TokenSet:
 
 
 class TokenStore:
-    """Persists the token pair as a user-only-readable JSON file."""
+    """Persists the token pair as a user-only-readable JSON file.
+
+    The file is shared state: any other demo-student process pointed at the
+    same workingDir reads and writes it too. Writes are atomic so a reader
+    never sees a half-written file, and exclusiveLock() serializes refreshes
+    across processes.
+    """
 
     def __init__(self, tokenPath: Path):
         self._tokenPath = tokenPath
@@ -153,11 +162,36 @@ class TokenStore:
             ) from error
 
     def save(self, tokens: TokenSet) -> None:
-        """Write tokens with 0600 permissions, creating the directory if needed."""
+        """Write tokens with 0600 permissions, creating the directory if needed.
+
+        Writes to a private temporary file and renames it into place, so a
+        concurrent reader sees either the old pair or the new one, never a
+        partial write.
+        """
         self._tokenPath.parent.mkdir(parents=True, exist_ok=True)
-        self._tokenPath.touch(mode=0o600, exist_ok=True)
-        self._tokenPath.chmod(0o600)
-        self._tokenPath.write_text(json.dumps(asdict(tokens)))
+        tempPath = self._tokenPath.with_name(f"{self._tokenPath.name}.{os.getpid()}.tmp")
+        tempPath.touch(mode=0o600, exist_ok=True)
+        tempPath.chmod(0o600)
+        tempPath.write_text(json.dumps(asdict(tokens)))
+        tempPath.replace(self._tokenPath)  # atomic within the same directory
+
+    @contextmanager
+    def exclusiveLock(self) -> Iterator[None]:
+        """Hold an inter-process lock covering a read-refresh-write cycle.
+
+        D2L rotates refresh tokens, so two processes refreshing at once means
+        the loser's token is invalidated mid-run. The lock lives in a sibling
+        file and is released by the OS if the holder dies, so it cannot go
+        stale.
+        """
+        lockPath = self._tokenPath.with_name(f"{self._tokenPath.name}.lock")
+        lockPath.parent.mkdir(parents=True, exist_ok=True)
+        with open(lockPath, "w") as lockFile:
+            fcntl.flock(lockFile, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lockFile, fcntl.LOCK_UN)
 
 
 class TokenManager:
@@ -165,7 +199,10 @@ class TokenManager:
 
     Refreshes ahead of expiry and after a 401, ensuring that concurrent
     workers trigger at most one refresh, since D2L refresh tokens are
-    single-use.
+    single-use. The threading lock only covers this process, so refreshes
+    also take TokenStore.exclusiveLock() to serialize against any other
+    demo-student process sharing the same working directory (a manual run
+    alongside the cron job, say).
     """
 
     def __init__(self, config: AppConfig, store: TokenStore):
@@ -197,10 +234,35 @@ class TokenManager:
         return self._tokens
 
     def _refreshLocked(self, tokens: TokenSet) -> TokenSet:
-        fresh = refreshTokenSet(self._config, tokens.refreshToken)
-        self._store.save(fresh)
-        self._tokens = fresh
-        return fresh
+        """Exchange the refresh token, tolerating a concurrent refresher.
+
+        Because D2L invalidates a refresh token the moment it is used, another
+        process that refreshed first has already killed the one held here. In
+        that case the pair it wrote is on disk, so adopt that instead of
+        failing the run.
+        """
+        with self._store.exclusiveLock():
+            stored = self._store.load()
+            if stored is not None and stored.refreshToken != tokens.refreshToken:
+                # Another process refreshed while this one waited for the lock.
+                self._tokens = stored
+                if not stored.isExpired():
+                    return stored
+                tokens = stored
+            try:
+                fresh = refreshTokenSet(self._config, tokens.refreshToken)
+            except AuthError:
+                # A process that does not take the lock can still beat us here.
+                recovered = self._store.load()
+                if recovered is None or recovered.refreshToken == tokens.refreshToken:
+                    raise  # nothing newer on disk, so the failure is real
+                self._tokens = recovered
+                if not recovered.isExpired():
+                    return recovered
+                fresh = refreshTokenSet(self._config, recovered.refreshToken)
+            self._store.save(fresh)
+            self._tokens = fresh
+            return fresh
 
 
 def findMkcert() -> str | None:

@@ -1,5 +1,6 @@
 """Tests for OAuth2 flows, token storage, and token refresh."""
 
+import fcntl
 import json
 import os
 import threading
@@ -154,6 +155,26 @@ def test_tokenStoreRejectsCorruptFile(tmp_path):
         store.load()
 
 
+def test_tokenStoreLeavesNoTemporaryFileBehind(tmp_path):
+    store = TokenStore(tmp_path / "working" / "token.json")
+    store.save(TokenSet(accessToken="a", refreshToken="r", expiresAt=123.0))
+    assert [p.name for p in (tmp_path / "working").iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_exclusiveLockExcludesOtherHolders(tmp_path):
+    store = TokenStore(tmp_path / "working" / "token.json")
+    lockPath = tmp_path / "working" / "token.json.lock"
+
+    with store.exclusiveLock():
+        with open(lockPath) as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    with open(lockPath) as contender:  # released on exit
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(contender, fcntl.LOCK_UN)
+
+
 # --- token manager ---
 
 
@@ -218,6 +239,48 @@ def test_tokenManagerHandleUnauthorizedRefreshesOncePerToken(config):
     assert manager.handleUnauthorized("revoked") == "fresh"
     assert manager.handleUnauthorized("revoked") == "fresh"
     assert route.call_count == 1
+
+
+@respx.mock
+def test_refreshAdoptsPairWrittenByAnotherProcess(config):
+    """Another demo-student process refreshed first; use what it left on disk."""
+    store = TokenStore(config.tokenPath)
+    store.save(TokenSet(accessToken="old", refreshToken="r1", expiresAt=time.time() - 1))
+    manager = TokenManager(config, store)
+    store.save(TokenSet(accessToken="theirs", refreshToken="r2",
+                        expiresAt=time.time() + 3600))
+
+    assert manager.getAccessToken() == "theirs"
+    assert not respx.calls  # no refresh needed, the disk already had a fresh pair
+
+
+@respx.mock
+def test_refreshRecoversWhenOurRefreshTokenWasInvalidated(config):
+    """D2L rotates refresh tokens, so a racing process kills the one held here."""
+    store = TokenStore(config.tokenPath)
+    store.save(TokenSet(accessToken="old", refreshToken="r1", expiresAt=time.time() - 1))
+    manager = TokenManager(config, store)
+
+    def rejectAfterOtherProcessRotated(request):
+        store.save(TokenSet(accessToken="theirs", refreshToken="r2",
+                            expiresAt=time.time() + 3600))
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    respx.post(TOKEN_URL).mock(side_effect=rejectAfterOtherProcessRotated)
+    assert manager.getAccessToken() == "theirs"
+
+
+@respx.mock
+def test_refreshRaisesWhenNoNewerPairOnDisk(config):
+    """A genuine invalid_grant still surfaces rather than being swallowed."""
+    store = TokenStore(config.tokenPath)
+    store.save(TokenSet(accessToken="old", refreshToken="r1", expiresAt=time.time() - 1))
+    manager = TokenManager(config, store)
+    respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant"})
+    )
+    with pytest.raises(AuthError, match="invalid_grant"):
+        manager.getAccessToken()
 
 
 def test_tokenManagerWithoutStoredTokensRaises(config):
