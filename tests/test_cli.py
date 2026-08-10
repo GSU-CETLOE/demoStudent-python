@@ -22,13 +22,15 @@ VERSIONS_RESPONSE = [
 @pytest.fixture
 def configPath(tmp_path):
     path = tmp_path / "config.toml"
+    # workingDir is a single-quoted TOML literal string: in a basic string the
+    # backslashes of a Windows path are escape sequences and fail to parse.
     path.write_text(
         f"""
 host = "example.brightspace.com"
 clientId = "client-id"
 clientSecret = "client-secret"
 redirectUri = "https://localhost:8443/callback"
-workingDir = "{tmp_path}/working"
+workingDir = '{tmp_path}/working'
 maxWorkers = 4
 """
     )

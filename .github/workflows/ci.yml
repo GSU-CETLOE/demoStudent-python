@@ -34,6 +34,7 @@ jobs:
       - name: Install/update demoStudent.sh script
         run: |
           mkdir -p /data/cetlocron/bin
+          mkdir -p /data/cetlocron/logs   # cron redirects into here; a missing dir loses all output
           cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
           chmod +x /data/cetlocron/bin/demoStudent.sh
       - name: Sync code
@@ -52,7 +53,7 @@ jobs:
           CRON_MARKER="# demoStudent-cron"
 
           # \` keeps the backtick literal, \% is the cron-escaped percent sign
-          CRON_CMD="${CRON_BIN}/demo-student-import >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
+          CRON_CMD="${CRON_BIN}/demoStudent.sh >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
 
           CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
           CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")
@@ -81,6 +82,7 @@ jobs:
       - name: Install/update demoStudent.sh script
         run: |
           mkdir -p /data/cetlocron/bin
+          mkdir -p /data/cetlocron/logs   # cron redirects into here; a missing dir loses all output
           cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
           chmod +x /data/cetlocron/bin/demoStudent.sh
       - name: Sync code
@@ -99,7 +101,7 @@ jobs:
           CRON_MARKER="# demoStudent-cron"
 
           # \` keeps the backtick literal, \% is the cron-escaped percent sign
-          CRON_CMD="${CRON_BIN}/demo-student-import >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
+          CRON_CMD="${CRON_BIN}/demoStudent.sh >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
 
           CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
           CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")

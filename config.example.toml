@@ -41,4 +41,10 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 # maxWorkers = 8                  # worker threads for course processing
 # workingDir = "working"          # holds the SQLite db, tokens, mkcert certs, and logs/
 # logDir = "logs"                 # log directory; relative to workingDir unless absolute
+#
+# Windows paths: a backslash starts an escape sequence inside a double-quoted
+# TOML string, so "C:\Users\me" fails to parse with "Invalid hex value". Use a
+# single-quoted literal string or forward slashes:
+# workingDir = 'C:\Users\me\demoStudent\working'
+# workingDir = "C:/Users/me/demoStudent/working"
 # logFilePrefix = "demoStudent"   # log files become {logFilePrefix}_YYYYMM.log

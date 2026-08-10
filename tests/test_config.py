@@ -84,7 +84,9 @@ def test_workingDirRelativeToConfigFile(tmp_path):
 
 
 def test_workingDirAbsolutePathRespected(tmp_path):
-    content = MINIMAL_CONFIG + f'\nworkingDir = "{tmp_path}/elsewhere"\n'
+    # Single-quoted TOML literal string: in a basic string the backslashes of a
+    # Windows path are escape sequences, so "C:\Users\..." fails to parse.
+    content = MINIMAL_CONFIG + f"\nworkingDir = '{tmp_path}/elsewhere'\n"
     config = loadConfig(writeConfig(tmp_path, content))
     assert config.workingDir == tmp_path / "elsewhere"
 
