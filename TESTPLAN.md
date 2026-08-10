@@ -10,7 +10,7 @@ manual testing.
 
 - [ ] `uv sync` completes without errors
 - [ ] `cp config.example.toml config.toml`, fill in test-instance values
-- [ ] `uv run demo-student --help` shows the four subcommands
+- [ ] `uv run demo-student --help` shows the five subcommands
 - [ ] Running any command with a missing config file prints a clear error and exits 2
 
 ## auth
@@ -25,6 +25,14 @@ manual testing.
 - [ ] Pasting a redirect URL with a wrong/stale `state` fails with a clear error
 - [ ] After deleting `working/token/token.json`, `run` exits 2 with a message that
       says to run `demo-student auth`
+
+## whoami
+
+- [ ] `uv run demo-student whoami` prints the host, name, username, user id,
+      and token file path of the account signed in via `auth` (matches the
+      account shown in the D2L UI)
+- [ ] After deleting `working/token/token.json`, `whoami` exits 2 with a
+      message that says to run `demo-student auth`
 
 ## run
 

@@ -2,6 +2,7 @@
 
 Commands:
     demo-student auth [--manual]        obtain and store OAuth2 tokens
+    demo-student whoami                 show the D2L account the stored tokens act as
     demo-student run [options]          add demo students to course offerings
                                          (--recheck re-verifies already-completed
                                          courses instead of skipping them)
@@ -13,6 +14,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from .auth import AuthError, TokenManager, TokenStore, obtainTokensInteractively
 from .config import AppConfig, ConfigError, loadConfig
@@ -45,6 +47,9 @@ def buildParser() -> argparse.ArgumentParser:
     authParser.add_argument("--manual", action="store_true",
                             help="Paste-the-URL flow for machines without mkcert or a browser")
 
+    subparsers.add_parser(
+        "whoami", help="Show which D2L account the stored tokens authenticate as")
+
     runParser = subparsers.add_parser(
         "run", help="Check courses and add missing demo students")
     runParser.add_argument("--semesters", type=int, metavar="N",
@@ -71,19 +76,39 @@ def buildParser() -> argparse.ArgumentParser:
     return parser
 
 
+def _fetchIdentity(config: AppConfig) -> dict[str, Any]:
+    """Ask D2L which user the stored tokens act as."""
+    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    try:
+        return api.whoAmI()
+    finally:
+        api.close()
+
+
+def _identityName(identity: dict[str, Any]) -> str:
+    """Display name from a whoami response."""
+    return f"{identity.get('FirstName', '')} {identity.get('LastName', '')}".strip()
+
+
 def cmdAuth(config: AppConfig, manual: bool) -> int:
     """Run an interactive OAuth flow, then verify the token with whoami."""
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     obtainTokensInteractively(config, manual=manual)
-    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
-    try:
-        identity = api.whoAmI()
-    finally:
-        api.close()
-    identityName = f"{identity.get('FirstName', '')} {identity.get('LastName', '')}".strip()
+    identityName = _identityName(_fetchIdentity(config))
     print(f"Authenticated to {config.host} as {identityName}")
     print(f"Tokens stored in {config.tokenPath}")
     fileLogger.info(f"Authenticated to {config.host} as {identityName}")
+    return 0
+
+
+def cmdWhoami(config: AppConfig) -> int:
+    """Print the D2L account the stored tokens make API calls as."""
+    identity = _fetchIdentity(config)
+    print(f"  Host:       {config.host}")
+    print(f"  Name:       {_identityName(identity)}")
+    print(f"  Username:   {identity.get('UniqueName', '-')}")
+    print(f"  User id:    {identity.get('Identifier', '-')}")
+    print(f"  Token file: {config.tokenPath}")
     return 0
 
 
@@ -191,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
         config = loadConfig(args.config)
         if args.command == "auth":
             return cmdAuth(config, manual=args.manual)
+        if args.command == "whoami":
+            return cmdWhoami(config)
         if args.command == "run":
             return cmdRun(config, args)
         if args.command == "status":

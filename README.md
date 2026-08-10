@@ -238,6 +238,26 @@ In the manual flow the browser shows a connection error after sign-in — that
 is expected. Copy the full URL from the address bar (it contains the
 authorization code) and paste it into the prompt.
 
+### `demo-student whoami`
+
+Shows which D2L account the stored tokens act as — every user and enrollment
+the tool creates is attributed to this account, so check here when a run
+fails with 403s or when several service accounts are in play.
+
+```sh
+uv run demo-student whoami
+```
+
+```
+  Host:       yourschool.brightspace.com
+  Name:       CETLOE Api
+  Username:   cetloe.api
+  User id:    12345
+  Token file: working/token/token.json
+```
+
+Exits 2 with a message to run `demo-student auth` when no tokens are stored.
+
 ### `demo-student run`
 
 Discovers course offerings in the most recent semesters, then checks each one

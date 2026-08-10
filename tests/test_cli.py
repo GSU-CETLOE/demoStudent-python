@@ -219,6 +219,34 @@ def test_statusShowsRunsAndErrors(configPath, storedTokens, capsys):
     assert "No errors recorded" in capsys.readouterr().out
 
 
+@respx.mock
+def test_whoamiShowsAuthenticatedIdentity(configPath, storedTokens, capsys):
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
+    )
+    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(
+            200,
+            json={"Identifier": "1234", "FirstName": "Api", "LastName": "User",
+                  "UniqueName": "cetloe.api", "ProfileIdentifier": "profile-guid"},
+        )
+    )
+    exitCode = main(["--config", str(configPath), "whoami"])
+    assert exitCode == 0
+    out = capsys.readouterr().out
+    assert "example.brightspace.com" in out
+    assert "Api User" in out
+    assert "cetloe.api" in out
+    assert "1234" in out
+    assert "token.json" in out
+
+
+def test_whoamiWithoutTokensTellsUserToAuth(configPath, capsys):
+    exitCode = main(["--config", str(configPath), "whoami"])
+    assert exitCode == 2
+    assert "demo-student auth" in capsys.readouterr().err
+
+
 def test_importLegacy(configPath, tmp_path, capsys):
     legacyFile = tmp_path / "demo_783_newuser_co.txt"
     legacyFile.write_text("301\n302\n\n303\n302\n")
