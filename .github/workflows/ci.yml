@@ -45,11 +45,26 @@ jobs:
         run: uv sync
       - name: Ensure cron job is installed
         run: |
+          CRON_BIN="/data/cetlocron/bin"
+          CRON_LOG="/data/cetlocron/logs/cron"
+
           CRON_HEADER="## demoStudent cron job"
           CRON_MARKER="# demoStudent-cron"
-          CRON_LINE='0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.$(date +\%Y_\%m_\%d).out 2>&1 # demoStudent-cron'
 
-          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true ; echo "$CRON_HEADER" ; echo "$CRON_LINE" ) | crontab -
+          # \` keeps the backtick literal, \% is the cron-escaped percent sign
+          CRON_CMD="${CRON_BIN}/demo-student-import >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
+
+          CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
+          CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")
+
+          (
+            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true
+            echo "$CRON_HEADER"
+            echo "$CRON_LINE_1"
+            echo "$CRON_LINE_2"
+          ) | crontab -
+
+          crontab -l
 
   deploy-prod:
     needs: test
@@ -77,8 +92,23 @@ jobs:
         run: uv sync
       - name: Ensure cron job is installed
         run: |
+          CRON_BIN="/data/cetlocron/bin"
+          CRON_LOG="/data/cetlocron/logs/cron"
+
           CRON_HEADER="## demoStudent cron job"
           CRON_MARKER="# demoStudent-cron"
-          CRON_LINE="0 */3 * * * /data/cetlocron/bin/demoStudent.sh >> /data/cetlocron/logs/cron.$(date +\%Y_\%m_\%d).out 2>&1 $CRON_MARKER"
 
-          ( crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true ; echo "$CRON_HEADER" ; echo "$CRON_LINE" ) | crontab -
+          # \` keeps the backtick literal, \% is the cron-escaped percent sign
+          CRON_CMD="${CRON_BIN}/demo-student-import >> ${CRON_LOG}-\`date +\%Y-\%m-\%d\`.out 2>&1 ${CRON_MARKER}"
+
+          CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
+          CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")
+
+          (
+            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true
+            echo "$CRON_HEADER"
+            echo "$CRON_LINE_1"
+            echo "$CRON_LINE_2"
+          ) | crontab -
+
+          crontab -l
