@@ -136,8 +136,9 @@ Names below are as they appear in Brightspace and are grouped by tool.
 | Users | **Enroll '{demo student role}'** | Course Offering | `POST /lp/{v}/enrollments/` — enrolling the demo student |
 | Users | **Search for '{demo student role}'** | Organization, Course Offering | `GET /lp/{v}/users/?userName=` — finding `demo.{orgUnitId}` |
 | Users | **View User Enrollments** | Organization, Semester, Course Template, Course Offering, Department | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` — the enrollment check |
-| Users | **Create a User in the Database** | Organization, Department *(the only types offered)* | `POST /lp/{v}/users/` — creating the demo student |
+| Users | **Create a User in the Database** | Organization | `POST /lp/{v}/users/` — creating the demo student |
 | Users | View the Users' Email Address, View Users' Contact Information | Organization | the `ExternalEmail` set on creation |
+| User Information Privacy | **every row the tool offers** | Organization | `POST /lp/{v}/users/` — D2L only lets a role create a user if it can see every user field |
 | Classlist | **Has Access to the Classlist** | Course Offering | enrollment reads and writes inside a course |
 | Classlist | **Change Enrollment** | Course Offering | Brightspace's usual pairing for enrollment changes |
 
@@ -145,6 +146,36 @@ Names below are as they appear in Brightspace and are grouped by tool.
 Brightspace lists one of each for every role in the tenant, named after that
 role. They must be enabled for the demo student role specifically. Changing
 `roleId` in the config means enabling a different pair.
+
+Both sit at the very bottom of the Users tool, one row per role in the tenant,
+which leaves the general permissions a long scroll above them. `Create a User
+in the Database` is near the top, between `View User Enrollments` and `See the
+User Management tool`.
+
+**User Information Privacy is its own tool**, further down the grid, and it is
+easy to read as part of Users. D2L's reference for `POST /lp/{v}/users/` says
+the action "is subject to user privacy controls" and that "the calling user
+context must belong to a role granted permission to see all user fields via
+User Information Privacy." Every row it offers at Organization has to be on:
+
+- See First Names, See Middle Names, See Last Names
+- See Usernames
+- See Org Defined IDs
+- See Email Addresses
+- See IP Addresses
+- Distinguish Preferred Names from Legal Names
+- See Name for Anonymized Activities
+- See Pronouns
+
+The last two are the ones to look at first — at GSU they were the only two left
+unchecked. Granting just the fields this tool sends is not enough, because the
+check is on the role rather than on the request. `See External ID Values` is
+offered at Course Offering only, so it cannot be granted at Organization and is
+not needed.
+
+A role missing any of these fails exactly like a role missing `Create a User in
+the Database`: a bare `Not Authorized`, with nothing in the response pointing at
+privacy.
 
 #### Course Access Options (easy to miss)
 
