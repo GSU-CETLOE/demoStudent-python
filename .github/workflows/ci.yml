@@ -38,6 +38,8 @@ jobs:
           mkdir -p /data/cetlocron/logs   # cron redirects into here; a missing dir loses all output
           cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
           chmod +x /data/cetlocron/bin/demoStudent.sh
+          cp bin/demoStudentRecheck.sh /data/cetlocron/bin/demoStudentRecheck.sh
+          chmod +x /data/cetlocron/bin/demoStudentRecheck.sh
       - name: Sync code
         run: |
           mkdir -p "$APP_DIR"
@@ -60,11 +62,22 @@ jobs:
           CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
           CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")
 
+          RECHECK_HEADER="## demoStudent recheck cron job"
+          RECHECK_MARKER="# demoStudentRecheck-cron"
+
+          RECHECK_CMD="${CRON_BIN}/demoStudentRecheck.sh >> ${CRON_LOG}-recheck-\`date +\%Y-\%m-\%d\`.out 2>&1 ${RECHECK_MARKER}"
+
+          # every other day at 2am
+          RECHECK_LINE=$(printf '0\t2\t*/2\t*\t*\t%s' "$RECHECK_CMD")
+
           (
-            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true
+            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" \
+              | grep -v "$RECHECK_MARKER" | grep -v "^$RECHECK_HEADER$" || true
             echo "$CRON_HEADER"
             echo "$CRON_LINE_1"
             echo "$CRON_LINE_2"
+            echo "$RECHECK_HEADER"
+            echo "$RECHECK_LINE"
           ) | crontab -
 
           crontab -l
@@ -87,6 +100,8 @@ jobs:
           mkdir -p /data/cetlocron/logs   # cron redirects into here; a missing dir loses all output
           cp bin/demoStudent.sh /data/cetlocron/bin/demoStudent.sh
           chmod +x /data/cetlocron/bin/demoStudent.sh
+          cp bin/demoStudentRecheck.sh /data/cetlocron/bin/demoStudentRecheck.sh
+          chmod +x /data/cetlocron/bin/demoStudentRecheck.sh
       - name: Sync code
         run: |
           mkdir -p "$APP_DIR"
@@ -109,11 +124,22 @@ jobs:
           CRON_LINE_1=$(printf '0\t9-21/3\t*\t*\t*\t%s' "$CRON_CMD")
           CRON_LINE_2=$(printf '0\t23\t*\t*\t*\t%s' "$CRON_CMD")
 
+          RECHECK_HEADER="## demoStudent recheck cron job"
+          RECHECK_MARKER="# demoStudentRecheck-cron"
+
+          RECHECK_CMD="${CRON_BIN}/demoStudentRecheck.sh >> ${CRON_LOG}-recheck-\`date +\%Y-\%m-\%d\`.out 2>&1 ${RECHECK_MARKER}"
+
+          # every other day at 2am
+          RECHECK_LINE=$(printf '0\t2\t*/2\t*\t*\t%s' "$RECHECK_CMD")
+
           (
-            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" || true
+            crontab -l 2>/dev/null | grep -v "$CRON_MARKER" | grep -v "^$CRON_HEADER$" \
+              | grep -v "$RECHECK_MARKER" | grep -v "^$RECHECK_HEADER$" || true
             echo "$CRON_HEADER"
             echo "$CRON_LINE_1"
             echo "$CRON_LINE_2"
+            echo "$RECHECK_HEADER"
+            echo "$RECHECK_LINE"
           ) | crontab -
 
           crontab -l
