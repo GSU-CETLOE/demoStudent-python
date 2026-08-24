@@ -196,16 +196,6 @@ def test_enrollUserPostsExpectedBody(api):
 
 
 @respx.mock
-def test_getChildOrgUnits(api):
-    mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/orgstructure/1070555/children/", params={"ouTypeId": 5}).mock(
-        return_value=httpx.Response(200, json=[{"Identifier": "201"}, {"Identifier": "202"}])
-    )
-    children = api.getChildOrgUnits(1070555, ouTypeId=5)
-    assert [child["Identifier"] for child in children] == ["201", "202"]
-
-
-@respx.mock
 def test_iterDescendantsFollowsBookmarks(api):
     mockVersions()
     url = f"{BASE}/d2l/api/lp/1.47/orgstructure/201/descendants/paged/"

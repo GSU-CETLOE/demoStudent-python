@@ -34,13 +34,11 @@ class AppConfig:
     scope: str = "core:*:*"
     roleId: int = 783
     orgOu: int = 1070555
-    semesterOuType: int = 5
     courseOfferingOuType: int = 3
     usernamePrefix: str = "demo"
     firstName: str = "Demo"
     lastName: str = "Student"
     externalEmailDomain: str = "student.gsu.edu"
-    recentSemesterCount: int = 2
     maxWorkers: int = 8
     logDir: str = "logs"
     logFilePrefix: str = "demoStudent"

@@ -3,9 +3,10 @@
 Commands:
     demo-student auth [--manual]        obtain and store OAuth2 tokens
     demo-student whoami                 show the D2L account the stored tokens act as
-    demo-student run [options]          add demo students to course offerings
-                                         (--recheck re-verifies already-completed
-                                         courses instead of skipping them)
+    demo-student run [options]          add demo students to every course offering
+                                         in the organization (--recheck re-verifies
+                                         already-completed courses instead of
+                                         skipping them)
     demo-student status [--errors]      show recent runs and errors
     demo-student import-legacy FILE     seed completed courses from the legacy list
 """
@@ -52,17 +53,16 @@ def buildParser() -> argparse.ArgumentParser:
 
     runParser = subparsers.add_parser(
         "run", help="Check courses and add missing demo students")
-    runParser.add_argument("--semesters", type=int, metavar="N",
-                           help="Number of most recent semesters to process")
     runParser.add_argument("--ou-list", metavar="ID,ID",
-                           help="Comma-separated org unit ids to process instead of semesters")
+                           help="Comma-separated org unit ids to process instead of "
+                                "the whole organization")
     runParser.add_argument("--workers", type=int, metavar="N",
                            help="Worker thread count (default from config)")
     runParser.add_argument("--dry-run", action="store_true",
                            help="Report what would change without creating or enrolling anyone")
     runParser.add_argument("--recheck", action="store_true",
                            help="Re-verify in-scope courses even if already marked complete "
-                                "(use with --semesters or --ou-list to limit scope)")
+                                "(use with --ou-list to limit scope)")
 
     statusParser = subparsers.add_parser(
         "status", help="Show recent runs and metrics from the database")
@@ -125,7 +125,6 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
         summary = runEnrollment(
             config, api, db,
             ouList=ouList,
-            recentSemesterCount=args.semesters,
             maxWorkers=args.workers,
             dryRun=args.dry_run,
             recheck=args.recheck,

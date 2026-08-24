@@ -30,14 +30,13 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 #
 # roleId = 783                    # the "Demo Student" role id; must NOT be a
 #                                 # cascading role (see README.md)
-# orgOu = 1070555                 # organization org unit that contains the semesters
-# semesterOuType = 5              # org unit type id for semesters
+# orgOu = 1070555                 # organization org unit; every course offering
+#                                 # beneath it is discovered
 # courseOfferingOuType = 3        # org unit type id for course offerings
 # usernamePrefix = "demo"         # usernames become demo.{orgUnitId}
 # firstName = "Demo"
 # lastName = "Student"
 # externalEmailDomain = "student.gsu.edu"
-# recentSemesterCount = 2         # how many recent semesters to process
 # maxWorkers = 8                  # worker threads for course processing
 # workingDir = "working"          # holds the SQLite db, tokens, mkcert certs, and logs/
 # logDir = "logs"                 # log directory; relative to workingDir unless absolute

@@ -120,15 +120,6 @@ class D2lApiClient:
         """Org unit properties (name, type, code)."""
         return self._request("GET", f"/d2l/api/lp/{self._lp()}/orgstructure/{orgUnitId}").json()
 
-    def getChildOrgUnits(self, orgUnitId: int, ouTypeId: int) -> list[dict[str, Any]]:
-        """Direct children of an org unit filtered to one org unit type."""
-        response = self._request(
-            "GET",
-            f"/d2l/api/lp/{self._lp()}/orgstructure/{orgUnitId}/children/",
-            params={"ouTypeId": ouTypeId},
-        )
-        return response.json()
-
     def iterDescendants(self, orgUnitId: int, ouTypeId: int) -> Iterator[dict[str, Any]]:
         """All descendants of an org unit of one type, following paging bookmarks."""
         bookmark: str | None = None

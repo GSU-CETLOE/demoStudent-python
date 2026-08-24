@@ -49,10 +49,7 @@ def mockDiscovery(courseIds):
     respx.get(f"{BASE}/d2l/api/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
-    respx.get(f"{BASE}/d2l/api/lp/1.47/orgstructure/1070555/children/").mock(
-        return_value=httpx.Response(200, json=[{"Identifier": "201"}])
-    )
-    respx.get(f"{BASE}/d2l/api/lp/1.47/orgstructure/201/descendants/paged/").mock(
+    respx.get(f"{BASE}/d2l/api/lp/1.47/orgstructure/1070555/descendants/paged/").mock(
         return_value=httpx.Response(
             200,
             json={

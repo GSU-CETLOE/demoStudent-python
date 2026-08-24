@@ -14,20 +14,15 @@ def config(tmp_path):
         clientSecret="client-secret",
         redirectUri="https://localhost:8443/callback",
         workingDir=tmp_path / "working",
-        recentSemesterCount=2,
     )
 
 
 class FakeApi:
     """Serves canned org-structure data through the D2lApiClient interface."""
 
-    def __init__(self, children=None, descendants=None, orgUnits=None):
-        self.children = children or {}
+    def __init__(self, descendants=None, orgUnits=None):
         self.descendants = descendants or {}
         self.orgUnits = orgUnits or {}
-
-    def getChildOrgUnits(self, orgUnitId, ouTypeId):
-        return self.children[(orgUnitId, ouTypeId)]
 
     def iterDescendants(self, orgUnitId, ouTypeId):
         yield from self.descendants.get((orgUnitId, ouTypeId), [])
@@ -40,30 +35,41 @@ def courseItem(identifier, name="Course", code="CODE"):
     return {"Identifier": str(identifier), "Name": name, "Code": code}
 
 
-def test_discoverFromRecentSemesters(config):
+def test_discoverWalksTheWholeOrganization(config):
     api = FakeApi(
-        children={
-            (1070555, 5): [courseItem(201), courseItem(203), courseItem(202)],
-        },
         descendants={
-            (203, 3): [courseItem(301, "Bio", "BIO101"), courseItem(302)],
-            (202, 3): [courseItem(303)],
+            (1070555, 3): [courseItem(301, "Bio", "BIO101"), courseItem(302), courseItem(303)],
         },
     )
     offerings = discoverCourseOfferings(api, config)
-    # Two most recent semesters (203, 202) by descending id; 201 excluded
     assert {offering.orgUnitId for offering in offerings} == {301, 302, 303}
     bio = next(offering for offering in offerings if offering.orgUnitId == 301)
     assert bio == CourseOffering(orgUnitId=301, name="Bio", code="BIO101")
 
 
-def test_recentSemesterCountOverride(config):
+def test_discoverIncludesCoursesOutsideSemesters(config):
+    # Courses parented to a course template rather than a semester are
+    # descendants of the organization too, so the org-wide walk finds them.
     api = FakeApi(
-        children={(1070555, 5): [courseItem(201), courseItem(203), courseItem(202)]},
-        descendants={(203, 3): [courseItem(301)]},
+        descendants={
+            (1070555, 3): [
+                courseItem(301, "Bio", "BIO101"),
+                courseItem(9001, "ENGL1101_BuildingSection", "ENGL1101_BS"),
+                courseItem(9002, "Sandbox (Romski)", "sb_romski_01"),
+            ],
+        },
     )
-    offerings = discoverCourseOfferings(api, config, recentSemesterCount=1)
-    assert {offering.orgUnitId for offering in offerings} == {301}
+    offerings = discoverCourseOfferings(api, config)
+    assert {offering.orgUnitId for offering in offerings} == {301, 9001, 9002}
+
+
+def test_discoverDeduplicatesRepeatedOrgUnits(config):
+    # An org unit with several parents can appear more than once in the walk.
+    api = FakeApi(
+        descendants={(1070555, 3): [courseItem(301), courseItem(301), courseItem(302)]},
+    )
+    offerings = discoverCourseOfferings(api, config)
+    assert len(offerings) == 2
 
 
 def test_ouListWithCourseOfferingUsedDirectly(config):
@@ -83,6 +89,15 @@ def test_ouListWithContainerWalksDescendants(config):
     )
     offerings = discoverCourseOfferings(api, config, ouList=[202])
     assert {offering.orgUnitId for offering in offerings} == {303, 304}
+
+
+def test_ouListSkipsTheOrganizationWideWalk(config):
+    api = FakeApi(
+        orgUnits={301: {"Identifier": "301", "Name": "Bio", "Code": "BIO101", "Type": {"Id": 3}}},
+        descendants={(1070555, 3): [courseItem(999)]},
+    )
+    offerings = discoverCourseOfferings(api, config, ouList=[301])
+    assert {offering.orgUnitId for offering in offerings} == {301}
 
 
 def test_duplicateCoursesDeduplicated(config):

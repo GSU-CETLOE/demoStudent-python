@@ -46,14 +46,18 @@ manual testing.
 - [ ] A course whose demo user exists but is unenrolled gets `enrolledExistingUser`
       (unenroll the demo user in the UI, delete its row from `completedCourses`,
       re-run)
-- [ ] `uv run demo-student run --semesters 1` discovers course offerings from
-      only the most recent semester
+- [ ] `uv run demo-student run --dry-run` (no `--ou-list`) discovers every
+      course offering in the organization — the discovered count matches the
+      course offering total in the D2L UI, not just the current semesters
+- [ ] The discovered set includes courses with no semester parent: pick a
+      building section or sandbox course (parented to a course template) and
+      confirm it appears in the run output or `completedCourses`
 - [ ] `uv run demo-student run --workers 16` completes noticeably faster on a
       large pending set
-- [ ] `uv run demo-student run --semesters 1 --recheck` re-processes courses
-      already marked complete for the most recent semester (summary shows
-      `0 already completed`, all in-scope courses `to check`) and reports
-      `alreadyEnrolled` for each with no API changes (verify in D2L UI)
+- [ ] `uv run demo-student run --recheck` re-processes every course already
+      marked complete (summary shows `0 already completed`, all courses
+      `to check`) and reports `alreadyEnrolled` for each with no API changes
+      (verify in D2L UI)
 - [ ] `uv run demo-student run --ou-list <test-course-ou> --recheck` re-checks
       only that one course, leaving other completed courses' rows in
       `completedCourses` untouched

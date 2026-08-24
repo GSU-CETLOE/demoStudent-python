@@ -45,9 +45,6 @@ class FakeApi:
         self._nextUserId = 9000
         self.threadNames = set()
 
-    def getChildOrgUnits(self, orgUnitId, ouTypeId):
-        return [courseItem(201)]
-
     def iterDescendants(self, orgUnitId, ouTypeId):
         yield from (courseItem(courseId) for courseId in self.courseIds)
 
@@ -284,8 +281,9 @@ def test_summaryReportsFinishTimeAndElapsed(config, db):
 
 def test_discoveryFailureRecordsErrorAndFailsRun(config, db):
     class BrokenApi(FakeApi):
-        def getChildOrgUnits(self, orgUnitId, ouTypeId):
+        def iterDescendants(self, orgUnitId, ouTypeId):
             raise D2lApiError("Server error", httpStatus=500)
+            yield  # pragma: no cover - keeps this a generator, as the client's is
 
     api = BrokenApi(courseIds=[])
     with pytest.raises(D2lApiError):

@@ -64,7 +64,6 @@ def runEnrollment(
     api,
     db: MetricsDb,
     ouList: list[int] | None = None,
-    recentSemesterCount: int | None = None,
     maxWorkers: int | None = None,
     dryRun: bool = False,
     recheck: bool = False,
@@ -79,8 +78,7 @@ def runEnrollment(
         fileLogger.info(f"Run {runId}: pruned {pruned} database rows older than a year")
 
     try:
-        courses = discoverCourseOfferings(api, config, ouList=ouList,
-                                          recentSemesterCount=recentSemesterCount)
+        courses = discoverCourseOfferings(api, config, ouList=ouList)
     except Exception as error:
         httpStatus = error.httpStatus if isinstance(error, D2lApiError) else None
         db.recordError(runId, orgUnitId=None, phase="discovery",

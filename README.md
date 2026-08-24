@@ -94,7 +94,6 @@ below:
 | `GET /d2l/api/versions/` | *(none — version negotiation is unauthenticated)* |
 | `GET /lp/{v}/users/whoami` | `users:own_profile:read` |
 | `GET /lp/{v}/orgstructure/{ou}` | `organizations:organization:read` |
-| `GET /lp/{v}/orgstructure/{ou}/children/` | `organizations:organization:read` |
 | `GET /lp/{v}/orgstructure/{ou}/descendants/paged/` | `organizations:organization:read` |
 | `GET /lp/{v}/users/?userName=` | `users:userdata:read` |
 | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` | `enrollment:orgunit:read` |
@@ -291,23 +290,35 @@ Exits 2 with a message to run `demo-student auth` when no tokens are stored.
 
 ### `demo-student run`
 
-Discovers course offerings in the most recent semesters, then checks each one
+Discovers every course offering in the organization, then checks each one
 in parallel and creates/enrolls the demo student where missing.
 
 ```sh
-uv run demo-student run                          # default: 2 most recent semesters
-uv run demo-student run --semesters 3            # 3 most recent semesters
+uv run demo-student run                          # default: the whole organization
 uv run demo-student run --ou-list 2469900,2469901  # specific org units only
 uv run demo-student run --workers 16             # more worker threads
 uv run demo-student run --dry-run                # report only; change nothing
-uv run demo-student run --semesters 1 --recheck  # re-verify current semester
 uv run demo-student run --ou-list 2469900 --recheck  # re-verify one course
 ```
 
 Exit code is 0 when every course succeeded, 1 when any course errored (errors
 are stored in the database and the run continues past them).
 
-`--recheck` drops the in-scope courses (per `--semesters` or `--ou-list`)
+#### What discovery covers
+
+Discovery pages through the course-offering descendants of `orgOu`, so it
+reaches every course in the organization regardless of where it hangs in the
+org structure. This matters because **a course offering does not have to have
+a semester parent**: building sections, sandboxes, and university-related
+courses are parented to a course template instead. Walking semesters — as the
+legacy tool and earlier versions of this one did — silently skips those. On the
+GSU organization that is about 12,000 course offerings, roughly 6% of the
+total, including current-term building sections.
+
+The first full run therefore has a lot to do; later runs are cheap, because
+completed courses are filtered out of the database before any API call is made.
+
+`--recheck` drops the in-scope courses (the whole organization, or `--ou-list`)
 back to pending before the run, so already-completed courses are verified
 live against D2L again instead of being skipped. It's safe to run any time:
 each check is idempotent, so a course whose demo student is still in place

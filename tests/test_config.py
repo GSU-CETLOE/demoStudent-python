@@ -12,13 +12,11 @@ redirectUri = "https://localhost:8443/callback"
 scope = "core:*:*"
 roleId = 783
 orgOu = 1070555
-semesterOuType = 5
 courseOfferingOuType = 3
 usernamePrefix = "demo"
 firstName = "Demo"
 lastName = "Student"
 externalEmailDomain = "student.gsu.edu"
-recentSemesterCount = 2
 maxWorkers = 8
 workingDir = "working"
 logDir = "logs"
@@ -48,13 +46,11 @@ def test_loadFullConfig(tmp_path):
     assert config.scope == "core:*:*"
     assert config.roleId == 783
     assert config.orgOu == 1070555
-    assert config.semesterOuType == 5
     assert config.courseOfferingOuType == 3
     assert config.usernamePrefix == "demo"
     assert config.firstName == "Demo"
     assert config.lastName == "Student"
     assert config.externalEmailDomain == "student.gsu.edu"
-    assert config.recentSemesterCount == 2
     assert config.maxWorkers == 8
     assert config.logDir == "logs"
     assert config.logFilePrefix == "demoStudent"
@@ -65,12 +61,10 @@ def test_minimalConfigUsesDefaults(tmp_path):
     assert config.scope == "core:*:*"
     assert config.roleId == 783
     assert config.orgOu == 1070555
-    assert config.semesterOuType == 5
     assert config.courseOfferingOuType == 3
     assert config.usernamePrefix == "demo"
     assert config.firstName == "Demo"
     assert config.lastName == "Student"
-    assert config.recentSemesterCount == 2
     assert config.maxWorkers == 8
     assert config.logDir == "logs"
     assert config.logFilePrefix == "demoStudent"
