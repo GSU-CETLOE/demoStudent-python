@@ -1,31 +1,31 @@
 """Orphaned demo student detection.
 
-A demo student is orphaned when the course offering it was created for no
-longer exists in D2L. Those users serve no purpose once their course is
-gone, but deleting the wrong one is unrecoverable, so detection is built
-to fail safe at every step.
+A demo student is orphaned when the course offering it was created for
+no longer exists in D2L. Those accounts have nothing left to do, but
+removing the wrong one is not recoverable, so every step here is built
+to fail toward doing nothing.
 
 Candidates come from diffing the completedCourses table against live
-discovery, which costs one discovery pass rather than a call per course.
-That diff alone is not trusted: Brightspace silently omits org units the
-service account cannot reach from listings (see "Course Access Options"
-in README.md), so a permissions gap makes thousands of live courses look
-deleted. Every candidate is therefore confirmed individually with a
-direct org unit lookup, and only an explicit 404 counts as proof of
-deletion. A 403 means "cannot see it", which is not the same thing. Any
-other error is treated as unknown. Both are reported and left alone.
+discovery, which costs one discovery pass instead of a call per course.
+The diff by itself is not evidence. Brightspace leaves org units the
+service account cannot reach out of listings (see "Course Access
+Options" in README.md), so a permissions gap would make thousands of
+live courses look deleted. Each candidate is confirmed with its own org
+unit lookup, and only an explicit 404 counts. A 403 means the account
+cannot see the course, which is a different thing; any other error means
+nothing at all. Both get reported and left alone.
 
-As a second guard, a scan whose candidate set exceeds a share of all
-completed courses aborts without confirming anything, on the theory that
-a sudden mass orphaning is far more likely to be a broken service account
-than a real mass deletion.
+There is a second guard for the case the first one misses. A scan whose
+candidate set is too large a share of all completed courses gives up
+before confirming anything, since a sudden mass orphaning is usually a
+broken service account rather than real deletions.
 
-Cleanup deactivates by default rather than deleting. D2L reverses a user
-deletion only through a support request, only within 30 days, and only
-while no new account has taken the same username; since this tool reuses
-demo.{orgUnitId} on every run, a recreated demo student closes that
-window permanently. Deactivation blocks the account, keeps its
-enrollments, and can be undone at any time.
+Cleanup deactivates rather than deletes. D2L reverses a user deletion
+only through a support request, only within 30 days, and only while no
+new account has taken the same username. This tool reuses
+demo.{orgUnitId} on every run, so a recreated demo student closes that
+window for good. Deactivation blocks the account, keeps its enrollments,
+and can be undone whenever.
 """
 
 import logging
@@ -40,14 +40,14 @@ from .logs import LOGGER_NAME
 
 fileLogger = logging.getLogger(LOGGER_NAME)
 
-# Abort the scan when more than this share of completed courses look
-# orphaned; that pattern means a broken service account far more often
-# than it means real deletions.
+# Give up on a scan when more than this share of completed courses look
+# orphaned. That pattern is usually a broken service account rather than
+# real deletions.
 DEFAULT_MAX_CANDIDATE_RATIO = 0.05
 
-# The ratio alone is too strict on small course sets, where a handful of
-# genuine deletions is a large percentage. Candidate sets at or below
-# this size are always confirmed individually, which is cheap and safe.
+# The ratio on its own is too strict on small course sets, where a few
+# real deletions are a large percentage. Candidate sets this size or
+# smaller always get confirmed one by one, which is cheap anyway.
 MIN_CANDIDATES_BEFORE_ABORT = 25
 
 
@@ -174,7 +174,10 @@ def findOrphanedDemoStudents(
         orgUnitId = row["orgUnitId"]
 
         def skipUnconfirmable(reason: str) -> None:
-            """Leave a course alone because its state could not be established."""
+            """Leave a course alone because its state could not be established.
+
+            Anything short of an explicit 404 lands here.
+            """
             unreachable.append(orgUnitId)
             logFunc(f"  {orgUnitId}: skipped - cannot confirm ({reason})")
             fileLogger.warning(
@@ -227,18 +230,18 @@ def deleteOrphanedDemoStudents(
 ) -> OrphanDeleteOutcome:
     """Retire the demo students in a report and clear their database rows.
 
-    Deactivates by default. Deactivation blocks the account, keeps its
-    enrollments, and can be undone at any time. Pass hardDelete=True to
-    delete instead, which D2L reverses only through a support request,
-    only within 30 days, and only while no new account has taken the same
-    username. This tool reuses demo.{orgUnitId} on every run, so a
-    recreated demo student closes that window for good.
+    Deactivates by default, which blocks the account, keeps its
+    enrollments, and can be undone whenever. Pass hardDelete=True to
+    delete instead. D2L reverses a deletion only through a support
+    request, only within 30 days, and only while no new account has taken
+    the same username, and this tool reuses demo.{orgUnitId} on every
+    run.
 
-    Acts only on orphans already confirmed by findOrphanedDemoStudents, so
-    no course is judged deleted here. A user that fails keeps its
-    completedCourses row, leaving it on the books for a later retry, and
-    the failure is recorded in the errors table. Any failure is caught,
-    not just an API error, so one bad user never abandons the rest.
+    Works only from orphans findOrphanedDemoStudents already confirmed;
+    nothing is judged deleted here. A user that fails keeps its
+    completedCourses row and stays on the books for a retry, with the
+    failure recorded in the errors table. Every exception is caught, not
+    just D2lApiError, so one bad user cannot abandon the rest.
     """
     deleted = 0
     failed = 0

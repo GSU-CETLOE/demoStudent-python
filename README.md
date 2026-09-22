@@ -8,9 +8,9 @@ unless re-checked with `--recheck` (e.g. to confirm a demo student wasn't
 removed from a current-semester course). Errors and run metrics are stored in
 the same database so a future dashboard can report on them.
 
-When a course offering is deleted, its demo student is left behind with
-nothing to belong to. `find-orphans` reports those accounts and
-`delete-orphans` retires them.
+When a course offering is deleted, its demo student stays behind.
+`find-orphans` reports those leftover accounts and `delete-orphans`
+retires them.
 
 This tool replaces the legacy PHP cron script
 [gsu-dle/add_demo_user](https://github.com/gsu-dle/add_demo_user), moving from
@@ -106,8 +106,8 @@ scopes:
 | `PUT /lp/{v}/users/{userId}/activation` | `users:activation:update` |
 | `DELETE /lp/{v}/users/{userId}` | `users:userdata:delete` |
 
-The last two are used only by `delete-orphans`. Leave them off unless that
-command will be run: without them the other commands work unchanged.
+The last two are used only by `delete-orphans`. Leave them off if you are
+not running it; the other commands work the same either way.
 
 As one scope string (spaces separate scopes, commas separate permissions on the
 same resource, with no spaces around the commas):
@@ -155,15 +155,16 @@ Names below are as they appear in Brightspace and are grouped by tool.
 | User Information Privacy | **every row the tool offers** | Organization | `POST /lp/{v}/users/` — D2L only lets a role create a user if it can see every user field |
 | Classlist | **Has Access to the Classlist** | Course Offering | enrollment reads and writes inside a course |
 | Classlist | **Change Enrollment** | Course Offering | Brightspace's usual pairing for enrollment changes |
-| Users | **Can Activate or Deactivate Users** | Organization | `PUT /lp/{v}/users/{userId}/activation` — `delete-orphans` only |
-| Users | **Delete a User** | Organization | `DELETE /lp/{v}/users/{userId}` — `delete-orphans --hard-delete` only |
+| Users | **Can Activate or Deactivate Users** | Organization | `PUT /lp/{v}/users/{userId}/activation`, for `delete-orphans` |
+| Users | **Delete a User** | Organization | `DELETE /lp/{v}/users/{userId}`, for `delete-orphans --hard-delete` |
 | Users | **See the User Management tool** | Organization | required alongside both of the above |
 | Users | **Update a User** | Organization | required alongside `Can Activate or Deactivate Users` |
 
-The last four are needed only for `delete-orphans`. Note the asymmetry with
-user creation: `Create a User in the Database` stands alone, while both
-`Delete a User` and `Can Activate or Deactivate Users` additionally require
-`See the User Management tool`, and deactivation also requires `Update a User`.
+The last four are needed only for `delete-orphans`, and they have a
+dependency that user creation does not. `Create a User in the Database`
+stands alone, but `Delete a User` and `Can Activate or Deactivate Users`
+both also require `See the User Management tool`, and deactivation wants
+`Update a User` on top of that.
 
 `Enroll '...'` and `Search for '...'` are **per-target-role** permissions —
 Brightspace lists one of each for every role in the tenant, named after that
@@ -353,10 +354,10 @@ skipped until they age out of the one-year retention window (see
 
 ### `demo-student find-orphans`
 
-Reports demo students whose course offering no longer exists. An orphan
-is a `demo.{orgUnitId}` user whose course has been deleted, leaving the
-account with nothing to belong to. Read-only: nothing in D2L or the
-database changes, so the list can be reviewed before anything acts on it.
+Reports demo students whose course offering no longer exists. When a
+course is deleted, its `demo.{orgUnitId}` user stays behind with nothing
+to belong to. Read-only: nothing in D2L or the database changes, so you
+can look at the list before anything acts on it.
 
 ```sh
 uv run demo-student find-orphans                       # scan the whole organization
@@ -364,14 +365,14 @@ uv run demo-student find-orphans --out orphans.csv     # also write the list to 
 uv run demo-student find-orphans --ou-list 2469900     # scan specific org units only
 ```
 
-Candidates come from diffing `completedCourses` against live discovery,
-which costs one discovery pass rather than a call per course. That diff
-is deliberately not trusted on its own, because Brightspace omits org
-units the service account cannot reach from listings (see
-[Course Access Options](#course-access-options-easy-to-miss)) — a
-permissions gap would otherwise make thousands of live courses look
-deleted. Every candidate is confirmed with a direct
-`GET /lp/{v}/orgstructure/{ou}`, and the result decides:
+Candidates come from diffing `completedCourses` against live discovery.
+That costs one discovery pass instead of a call per course, but the diff
+on its own is not evidence. Brightspace leaves org units the service
+account cannot reach out of listings entirely (see
+[Course Access Options](#course-access-options-easy-to-miss)), so a
+permissions gap would make thousands of live courses look deleted. Every
+candidate is therefore confirmed with a direct
+`GET /lp/{v}/orgstructure/{ou}`, and the response decides:
 
 | Response | Verdict |
 | --- | --- |
@@ -380,41 +381,43 @@ deleted. Every candidate is confirmed with a direct
 | Any other error | Proof of nothing. Reported as unconfirmable and left alone |
 | `200` | The course is alive; discovery simply missed it. Not an orphan |
 
-The summary reports what was left alone as well as what was found, so a
-run that skipped a thousand courses cannot look like a clean one.
+The summary counts what was left alone alongside what was found. A run
+that skipped a thousand courses should not be able to pass for a clean
+one.
 
 #### Unverified: courses in the recycle bin
 
 **Test this against your instance before relying on the cleanup.**
-Deleting a course in the Brightspace UI does not remove the org unit; it
-sends it to a recycle bin, from which it can be restored or permanently
-purged. D2L's API reference documents `GET /lp/{v}/orgstructure/{ou}` as
-returning 404 for an org unit that is not found, but it never states
-which of those two states a recycled course counts as.
+Deleting a course in the Brightspace UI does not remove the org unit. It
+goes to a recycle bin, where it can be restored or purged for good.
+D2L's API reference says `GET /lp/{v}/orgstructure/{ou}` returns 404 for
+an org unit that is not found, and never says which of those two states
+a recycled course counts as.
 
-So one of two things is true, and only a test against a real tenant
-settles it:
+So one of two things is true, and only a test on a real tenant settles
+it:
 
 - A recycled course returns **404**, and the cleanup works as described.
 - A recycled course returns **200**, in which case `find-orphans` sees it
   as alive and reports nothing until the course is purged from the
   archive.
 
-The failure mode is harmless either way: a course that reads as alive is
-never judged orphaned, so the worst case is that the command finds
-nothing rather than that it removes the wrong user. To check, delete a
-throwaway course that has a demo student and run `find-orphans`. If it
-does not appear, the org unit lookup is returning 200 for recycled
-courses and detection would need to consult
-`GET /lp/{v}/orgstructure/recyclebin/` as well.
+Either way nothing gets wrongly deleted, since a course that reads as
+alive is never judged orphaned. The worst case is that the command finds
+nothing.
+
+To check: delete a throwaway course that has a demo student, then run
+`find-orphans`. If the demo student does not show up, the org unit
+lookup is returning 200 for recycled courses, and detection would need
+to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.
 
 #### The candidate cap
 
 A scan aborts without confirming anything when the candidate set is both
-larger than 25 courses and above 5% of all completed courses. A sudden
-mass orphaning is far more often a broken service account than a real
-mass deletion, and the cheapest moment to catch that is before any
-confirmation call. Exit code is 2 with the reason.
+larger than 25 courses and above 5% of all completed courses. Exit code
+is 2, with the reason. A sudden mass orphaning is usually a broken
+service account rather than real deletions, and it is cheaper to catch
+that before making a few thousand confirmation calls than after.
 
 Raise the threshold with `--max-candidate-ratio` when a genuinely large
 cleanup is expected, e.g. after a semester purge:
@@ -424,14 +427,14 @@ uv run demo-student find-orphans --max-candidate-ratio 0.25   # allow up to 25%
 uv run demo-student find-orphans --max-candidate-ratio 1.0    # disable the check
 ```
 
-Check the access requirements above before raising it. The cap exists to
-catch exactly the failure that looks like success.
+Check the access requirements above before you raise it. A permissions
+gap is the failure this cap was put there for.
 
 ### `demo-student delete-orphans`
 
-Acts on what `find-orphans` reports. It runs the same scan, so it never
-takes a stale list, and **deactivates** the orphaned demo students by
-default.
+Acts on what `find-orphans` reports. It runs the same scan itself rather
+than reading a saved list, so it never works from stale results, and it
+**deactivates** the orphaned demo students by default.
 
 ```sh
 uv run demo-student delete-orphans                        # report only; changes nothing
@@ -439,35 +442,37 @@ uv run demo-student delete-orphans --confirm              # deactivate the orpha
 uv run demo-student delete-orphans --confirm --hard-delete  # permanently delete them
 ```
 
-Without `--confirm` the command reports and stops, so the same command
-shows what it would do before it does it.
+Without `--confirm` it reports and stops. Same command, same scan, so
+what you see in the report is what `--confirm` will act on.
 
 #### Why deactivation is the default
 
 D2L restores a deleted user only through a support request, only within
-30 days of the deletion, and only if no account has since been created
-with the same username. This tool creates `demo.{orgUnitId}` on every
-run, so a later run that recreates a wrongly deleted demo student closes
-that window permanently.
+30 days, and only if no account has since taken the same username. That
+last condition is the problem here: this tool creates `demo.{orgUnitId}`
+on every run, so a later run that recreates a wrongly deleted demo
+student shuts the window for good.
 
-Deactivation has none of that risk. It blocks the account, keeps its
-enrollments, and can be undone at any time from the Brightspace UI or
-the API. For a judgment the tool makes on its own, that is the right
-default. `--hard-delete` is there for when the accounts should genuinely
-be gone, and it prints the consequence before acting.
+Deactivation carries none of that. It blocks the account, keeps its
+enrollments, and can be undone from the Brightspace UI or the API at any
+point. The tool is making this call on its own, without a human looking
+at each course, which is a good argument for the reversible option being
+the default one. `--hard-delete` is there for when the accounts really
+should be gone, and it prints the consequence before it acts.
 
 Deactivation uses `PUT /lp/{v}/users/{userId}/activation`, which takes
-only an `IsActive` flag. The general user update route is deliberately
-not used, because its request body replaces every field on the user.
+only an `IsActive` flag. The general user update route would also work,
+and is deliberately avoided: its request body replaces every field on
+the user.
 
 #### What happens to the database
 
 A demo student that is successfully deactivated or deleted has its
-`completedCourses` row removed, since the course it recorded no longer
-exists. A user that fails keeps its row, staying on the books for a
-retry, and the failure is recorded in the `errors` table under the
-`deleteOrphan` phase. One failure never stops the rest; the command
-exits 1 if any failed.
+`completedCourses` row removed, since the course that row recorded is
+gone. A user that fails keeps its row and stays on the books for a
+retry. Failures land in the `errors` table under the `deleteOrphan`
+phase, where `status --errors` will show them. One failure never stops
+the rest. The command exits 1 if any failed.
 
 ### `demo-student status`
 
@@ -526,8 +531,8 @@ See `TESTPLAN.md` for the manual end-to-end checklist.
 
 ### Examples
 
-`examples/` holds runnable scripts that demonstrate the library against
-stand-in data, so they need no credentials and change nothing:
+`examples/` holds runnable scripts that drive the library against
+stand-in data. They need no credentials and change nothing:
 
 ```sh
 uv run python examples/findOrphanedDemoStudents.py

@@ -1,11 +1,11 @@
 # Examples
 
-Runnable scripts that demonstrate the library against stand-in data, so
-they need no D2L credentials and change nothing.
+Runnable scripts that drive the library against stand-in data. No D2L
+credentials needed, and nothing is changed.
 
 | Example | What it shows |
 | --- | --- |
-| `findOrphanedDemoStudents.py` | Scanning for demo students whose course offering was deleted, including why a course the service account cannot see is never treated as deleted |
+| `findOrphanedDemoStudents.py` | Scanning for demo students whose course offering was deleted, and why a course the service account cannot see is never treated as one |
 
 Run one with:
 

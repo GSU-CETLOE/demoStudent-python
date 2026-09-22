@@ -215,19 +215,18 @@ class D2lApiClient:
     def deleteUser(self, userId: int) -> None:
         """Permanently delete a user.
 
-        D2L recovers a deleted user only through a support request, within
-        30 days, and only if no account has since reused their username.
-        Callers must be certain before reaching this.
+        D2L gets a deleted user back only through a support request,
+        within 30 days, and only if no account has reused their username
+        since. Be sure before calling this.
         """
         self._request("DELETE", f"/d2l/api/lp/{self._lp()}/users/{userId}")
 
     def setUserActivation(self, userId: int, isActive: bool) -> None:
-        """Activate or deactivate a user without touching the rest of the record.
+        """Activate or deactivate a user, leaving the rest of the record alone.
 
-        The dedicated activation route takes only this flag. The general
-        user update route (PUT /users/{userId}) would replace every field
-        on the user with whatever the request body carried, so it is not
-        used for this.
+        This route takes only the flag. PUT /users/{userId} would do the
+        job too, but its body replaces every field on the user, so it is
+        not used here.
         """
         self._request(
             "PUT",

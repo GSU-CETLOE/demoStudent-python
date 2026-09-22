@@ -1,18 +1,17 @@
 """Scan for orphaned demo students without touching D2L or a real database.
 
 An orphaned demo student is one whose course offering has been deleted.
-This example wires findOrphanedDemoStudents to a stand-in D2L that has
-deleted one course and hidden another, so the safety behavior is visible
-without needing credentials:
+This runs findOrphanedDemoStudents against a stand-in D2L, so the safety
+behavior is visible without credentials:
 
     uv run python examples/findOrphanedDemoStudents.py
 
-Course 300 is live, 302 has been deleted, and 303 is real but invisible
-to the service account. Only 302 is reported as orphaned; 303 is counted
-as unconfirmable and deliberately left alone, because a course the
-account cannot see is not a deleted course.
+Course 300 is live, 302 has been deleted, and 303 exists but is
+invisible to the service account. Only 302 comes back as orphaned. 303
+is counted unconfirmable and left alone, because a course the account
+cannot see is not a deleted course.
 
-To run the same scan against a real tenant, use the CLI instead:
+For the same scan against a real tenant, use the CLI:
 
     uv run demo-student find-orphans --out working/orphans.csv
 """
@@ -39,7 +38,7 @@ class StandInD2l:
         self.liveCourseIds = [LIVE_COURSE]
 
     def iterDescendants(self, orgUnitId, ouTypeId):
-        """Discovery: only the live course comes back, as D2L would report it."""
+        """Discovery: only the live course comes back, the way D2L reports it."""
         for courseId in self.liveCourseIds:
             yield {"Identifier": str(courseId), "Name": f"Course {courseId}",
                    "Code": f"C{courseId}"}

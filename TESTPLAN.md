@@ -83,7 +83,7 @@ Read-only throughout: no step here should change anything in D2L.
       student is reported, the org unit lookup returns 404 for recycled
       courses and detection works. If it is not reported, the lookup is
       returning 200 and detection only finds courses purged from the
-      recycle bin — note this in README.md before relying on the cleanup
+      recycle bin. Note that in README.md before relying on the cleanup
 - [ ] `uv run demo-student find-orphans` with no deleted courses reports
       "No orphaned demo students found"
 - [ ] After deleting a course that has a demo student, `find-orphans`
