@@ -23,6 +23,12 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 #   users:own_profile:read           the whoami check run by `demo-student auth`
 # scope = "enrollment:orgunit:create,read organizations:organization:read users:own_profile:read users:userdata:create,read"
 #
+# The delete-orphans command needs two more scopes on top of those:
+#   users:activation:update          deactivate an orphaned demo student
+#   users:userdata:delete            --hard-delete only
+# With them, the full string is:
+# scope = "enrollment:orgunit:create,read organizations:organization:read users:activation:update users:own_profile:read users:userdata:create,read,delete"
+#
 # Scopes are fixed when the token is issued and do not change on refresh:
 # after editing this line, re-run `demo-student auth`. Scopes alone are not
 # enough — the signed-in account's Brightspace role must also have authority

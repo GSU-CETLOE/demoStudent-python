@@ -10,7 +10,7 @@ manual testing.
 
 - [ ] `uv sync` completes without errors
 - [ ] `cp config.example.toml config.toml`, fill in test-instance values
-- [ ] `uv run demo-student --help` shows the five subcommands
+- [ ] `uv run demo-student --help` shows the seven subcommands
 - [ ] Running any command with a missing config file prints a clear error and exits 2
 
 ## auth
@@ -72,6 +72,73 @@ manual testing.
 - [ ] Force an error (e.g. temporarily set a bogus `roleId`): run exits 1,
       continues past the failing course, and the error appears in
       `status --errors`; the failed course is retried on the next run
+
+## find-orphans
+
+Read-only throughout: no step here should change anything in D2L.
+
+- [ ] **Verify the recycle bin behavior first.** Delete a throwaway course
+      offering that has a demo student, then run
+      `uv run demo-student find-orphans --ou-list <that-ou>`. If the demo
+      student is reported, the org unit lookup returns 404 for recycled
+      courses and detection works. If it is not reported, the lookup is
+      returning 200 and detection only finds courses purged from the
+      recycle bin — note this in README.md before relying on the cleanup
+- [ ] `uv run demo-student find-orphans` with no deleted courses reports
+      "No orphaned demo students found"
+- [ ] After deleting a course that has a demo student, `find-orphans`
+      reports that course's `demo.{ou}` user as orphaned
+- [ ] The demo student still exists and is still active in the D2L UI
+      afterwards (the command changed nothing)
+- [ ] `uv run demo-student find-orphans --out working/orphans.csv` writes a
+      CSV with the header `orgUnitId,userName,userId,courseName,courseCode`
+      and one row per orphan
+- [ ] Running `find-orphans` twice reports the same orphans both times
+      (no row is consumed by reporting)
+- [ ] Revoke the service account's access to one course (or use a course it
+      cannot see), confirm that course is counted under "Unconfirmable"
+      and **not** reported as orphaned
+- [ ] The summary's "Unconfirmable" line is followed by the warning about
+      courses the account cannot see
+- [ ] Temporarily clear most of `completedCourses`' matching live courses
+      (or point `--ou-list` at a narrow set) so more than 25 courses and
+      more than 5% look orphaned: the command exits 2 and explains the cap
+- [ ] The same scan with `--max-candidate-ratio 1.0` proceeds instead
+- [ ] `uv run demo-student find-orphans --ou-list <ou>` limits the scan to
+      that org unit
+- [ ] With an empty `completedCourses` table, the command reports nothing
+      to scan and exits 0
+
+## delete-orphans
+
+Run against a **test** instance. Deactivation is reversible; `--hard-delete`
+is not.
+
+- [ ] `uv run demo-student delete-orphans` (no `--confirm`) lists the
+      orphans, says nothing was changed, and names `--confirm`
+- [ ] The demo student is still active in the D2L UI afterwards
+- [ ] `uv run demo-student delete-orphans --confirm` reports
+      "Deactivated: N" and the demo student shows as **inactive** in the
+      D2L UI, still present, with its enrollments intact
+- [ ] The deactivated user's `completedCourses` row is gone
+      (`sqlite3 working/db/demoStudent.db "SELECT * FROM completedCourses WHERE orgUnitId=<ou>"`
+      returns nothing)
+- [ ] A following `find-orphans` reports nothing for that course
+- [ ] Reactivating the user in the D2L UI restores it fully (confirming
+      the default action is reversible)
+- [ ] `uv run demo-student delete-orphans --confirm --hard-delete` prints
+      the support-request warning **before** acting, then removes the user
+      from D2L entirely
+- [ ] With a course the account cannot see, `delete-orphans --confirm`
+      touches nothing and counts it under "Unconfirmable"
+- [ ] Force a failure (e.g. remove the `Can Activate or Deactivate Users`
+      permission): the command exits 1, reports it under "Failed", leaves
+      the `completedCourses` row in place, and records the failure under
+      the `deleteOrphan` phase in `status --errors`
+- [ ] With two orphans where only one fails, the other still succeeds
+- [ ] `--out` writes the CSV even when `--confirm` is given
+- [ ] Log file records the deactivation or deletion of each user with its
+      org unit id
 
 ## status
 
