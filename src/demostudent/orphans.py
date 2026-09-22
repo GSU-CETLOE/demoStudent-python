@@ -106,6 +106,34 @@ class OrphanReport:
     candidatesChecked: int = 0
 
 
+def parseDemoStudentUsername(userName: str, config: AppConfig) -> int | None:
+    """The org unit id encoded in a demo student username, or None.
+
+    Demo students are named {usernamePrefix}.{orgUnitId}, so the username
+    carries its own pointer back to the course. That is what makes an
+    inventory scan possible at all: it needs no database row to know
+    which course an account belongs to.
+
+    Returns None for anything that is not a demo student this tool would
+    have created. A name that starts with the prefix but carries no
+    usable org unit id, such as demo.legacy from some other process, is
+    rejected rather than guessed at. D2L usernames are not case
+    sensitive, so the prefix match is not either.
+    """
+    if not userName:
+        return None
+    prefix = f"{config.usernamePrefix}."
+    if not userName.lower().startswith(prefix.lower()):
+        return None
+
+    orgUnitPart = userName[len(prefix):]
+    # isdigit() rejects signs, whitespace, and embedded separators, which
+    # int() alone would accept or misread.
+    if not orgUnitPart.isdigit():
+        return None
+    return int(orgUnitPart)
+
+
 def _resolveDemoStudent(
     api: OrphanScanApi,
     config: AppConfig,

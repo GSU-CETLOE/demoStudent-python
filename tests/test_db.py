@@ -181,3 +181,80 @@ def test_concurrentWritesFromThreads(db):
         list(pool.map(markCompleted, range(1000, 1100)))
 
     assert db.completedOrgUnitIds() == set(range(1000, 1100))
+
+
+def test_demoStudentsRoundTrip(db):
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True},
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True},
+    ])
+    students = db.demoStudents()
+    assert [student["userId"] for student in students] == [9301, 9302]
+    assert students[0]["userName"] == "demo.301"
+    assert students[0]["orgUnitId"] == 301
+    assert students[0]["courseState"] == "unknown"
+
+
+def test_recordDemoStudentsIsIdempotent(db):
+    student = {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True}
+    db.recordDemoStudents([student])
+    db.recordDemoStudents([student])
+    assert len(db.demoStudents()) == 1
+
+
+def test_recordDemoStudentsRefreshesLastSeen(db):
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True}])
+    first = db.demoStudents()[0]["lastSeenAt"]
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": False}])
+    refreshed = db.demoStudents()[0]
+    assert refreshed["lastSeenAt"] >= first
+    assert refreshed["isActive"] == 0  # the newer reading wins
+
+
+def test_courseStateIsRecordedPerStudent(db):
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True},
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True},
+    ])
+    db.setCourseState(301, "live")
+    db.setCourseState(302, "deleted")
+    byOrgUnit = {student["orgUnitId"]: student for student in db.demoStudents()}
+    assert byOrgUnit[301]["courseState"] == "live"
+    assert byOrgUnit[302]["courseState"] == "deleted"
+    assert byOrgUnit[302]["checkedAt"] is not None
+
+
+def test_demoStudentsFilteredByCourseState(db):
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True},
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True},
+    ])
+    db.setCourseState(302, "deleted")
+    orphaned = db.demoStudents(courseState="deleted")
+    assert [student["orgUnitId"] for student in orphaned] == [302]
+
+
+def test_forgetDemoStudentRemovesIt(db):
+    db.recordDemoStudents([
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True}])
+    assert db.forgetDemoStudent(9302) == 1
+    assert db.demoStudents() == []
+
+
+def test_demoStudentsSurviveRetentionPruning(db):
+    """The whole point of a separate table: old demo students must not age out."""
+    from tests.helpers import backdateAllRows
+
+    db.recordDemoStudents([
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True}])
+    runId = db.startRun()
+    db.markCourseCompleted(orgUnitId=302, courseName="C", courseCode="C",
+                           userName="demo.302", userId=9302, runId=runId)
+    backdateAllRows(db.dbPath, days=400)
+
+    db.pruneOldActivity()
+
+    assert db.completedOrgUnitIds() == set()   # the completed row aged out
+    assert len(db.demoStudents()) == 1         # the demo student did not

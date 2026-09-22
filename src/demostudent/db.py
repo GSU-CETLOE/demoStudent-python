@@ -1,8 +1,15 @@
-"""SQLite store for completed courses, run metrics, and errors.
+"""SQLite store for completed courses, demo students, run metrics, and errors.
 
 A future dashboard reads this database, so the schema is treated as a
 public contract. All writes are serialized behind a lock so worker
 threads can share one MetricsDb instance safely.
+
+Note the split between completedCourses and demoStudents. The first is a
+skip list: it answers "has this course been handled recently" and is
+pruned on the retention clock, because a stale answer there just means a
+course gets re-checked. The second is an inventory of real accounts in
+D2L and is never pruned. Ageing it out would lose track of exactly the
+old demo students most likely to be orphaned.
 """
 
 import sqlite3
@@ -35,6 +42,17 @@ CREATE TABLE IF NOT EXISTS runs (
     enrollmentsCreated INTEGER NOT NULL DEFAULT 0,
     errorCount         INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS demoStudents (
+    userId      INTEGER PRIMARY KEY,
+    userName    TEXT NOT NULL,
+    orgUnitId   INTEGER,
+    isActive    INTEGER,
+    lastSeenAt  TEXT NOT NULL,
+    courseState TEXT NOT NULL DEFAULT 'unknown',
+    checkedAt   TEXT
+);
+CREATE INDEX IF NOT EXISTS demoStudentsByOrgUnit
+    ON demoStudents (orgUnitId);
 CREATE TABLE IF NOT EXISTS errors (
     errorId    INTEGER PRIMARY KEY AUTOINCREMENT,
     runId      INTEGER,
@@ -58,6 +76,7 @@ class MetricsDb:
     def __init__(self, dbPath: Path | str):
         dbPath = Path(dbPath)
         dbPath.parent.mkdir(parents=True, exist_ok=True)
+        self.dbPath = dbPath
         self._lock = threading.Lock()
         self._connection = sqlite3.connect(dbPath, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -140,6 +159,78 @@ class MetricsDb:
             after = self._connection.execute("SELECT COUNT(*) FROM completedCourses").fetchone()[0]
         return after - before
 
+    def recordDemoStudents(self, students: list[dict]) -> int:
+        """Add or refresh demo student rows from a scan of D2L.
+
+        Keyed on userId, so re-scanning updates a user in place rather
+        than duplicating it. courseState and checkedAt are left alone,
+        since a scan only reports what exists in D2L; deciding whether
+        the course is still there is a separate step.
+
+        Returns the number of rows newly added.
+        """
+        if not students:
+            return 0
+        now = utcNow()
+        with self._lock:
+            before = self._connection.execute("SELECT COUNT(*) FROM demoStudents").fetchone()[0]
+            self._connection.executemany(
+                "INSERT INTO demoStudents"
+                " (userId, userName, orgUnitId, isActive, lastSeenAt)"
+                " VALUES (:userId, :userName, :orgUnitId, :isActive, :lastSeenAt)"
+                " ON CONFLICT(userId) DO UPDATE SET"
+                " userName = excluded.userName, orgUnitId = excluded.orgUnitId,"
+                " isActive = excluded.isActive, lastSeenAt = excluded.lastSeenAt",
+                [
+                    {
+                        "userId": student["userId"],
+                        "userName": student["userName"],
+                        "orgUnitId": student.get("orgUnitId"),
+                        "isActive": student.get("isActive"),
+                        "lastSeenAt": now,
+                    }
+                    for student in students
+                ],
+            )
+            self._connection.commit()
+            after = self._connection.execute("SELECT COUNT(*) FROM demoStudents").fetchone()[0]
+        return after - before
+
+    def demoStudents(self, courseState: str | None = None) -> list[dict]:
+        """Known demo students, optionally only those in one course state."""
+        query = "SELECT * FROM demoStudents"
+        params: tuple = ()
+        if courseState is not None:
+            query += " WHERE courseState = ?"
+            params = (courseState,)
+        query += " ORDER BY orgUnitId"
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def setCourseState(self, orgUnitId: int, courseState: str) -> int:
+        """Record what a course lookup concluded about one org unit.
+
+        courseState is 'live', 'deleted', or 'unknown'. Several demo
+        students could in principle point at one course, so this updates
+        by org unit rather than by user.
+        """
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE demoStudents SET courseState = ?, checkedAt = ? WHERE orgUnitId = ?",
+                (courseState, utcNow(), orgUnitId),
+            )
+            self._connection.commit()
+        return cursor.rowcount
+
+    def forgetDemoStudent(self, userId: int) -> int:
+        """Drop a demo student row, once the account is gone from D2L."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM demoStudents WHERE userId = ?", (userId,))
+            self._connection.commit()
+        return cursor.rowcount
+
     def startRun(self) -> int:
         """Create a run row in 'running' state and return its id."""
         with self._lock:
@@ -203,7 +294,11 @@ class MetricsDb:
         return [dict(row) for row in rows]
 
     def pruneOldActivity(self, retentionDays: int = ACTIVITY_RETENTION_DAYS) -> int:
-        """Delete activity older than the retention window from all tables.
+        """Delete activity older than the retention window.
+
+        Covers errors, runs, and completedCourses. The demoStudents table
+        is deliberately exempt: it tracks accounts that exist in D2L, and
+        the oldest of those are the ones most likely to be orphaned.
 
         Timestamps are uniform ISO-8601 UTC strings, so lexicographic
         comparison is chronological. Returns the number of rows removed.

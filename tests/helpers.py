@@ -11,5 +11,6 @@ def backdateAllRows(dbPath, days):
     connection.execute("UPDATE completedCourses SET completedAt = ?", (past,))
     connection.execute("UPDATE runs SET startedAt = ?", (past,))
     connection.execute("UPDATE errors SET occurredAt = ?", (past,))
+    connection.execute("UPDATE demoStudents SET lastSeenAt = ?", (past,))
     connection.commit()
     connection.close()
