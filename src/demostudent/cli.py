@@ -10,6 +10,9 @@ Commands:
     demo-student status [--errors]      show recent runs and errors
     demo-student find-orphans [--out]   report demo students whose course
                                          offering has been deleted
+    demo-student delete-orphans --confirm
+                                        delete the demo students find-orphans
+                                         reports (reports only without --confirm)
     demo-student import-legacy FILE     seed completed courses from the legacy list
 """
 
@@ -26,7 +29,7 @@ from .d2lApi import D2lApiClient, D2lApiError
 from .db import MetricsDb
 from .logs import LOGGER_NAME, setupFileLogging
 from .orphans import (DEFAULT_MAX_CANDIDATE_RATIO, OrphanReport, OrphanScanAborted,
-                      findOrphanedDemoStudents)
+                      deleteOrphanedDemoStudents, findOrphanedDemoStudents)
 from .runner import runEnrollment
 
 fileLogger = logging.getLogger(LOGGER_NAME)
@@ -82,6 +85,23 @@ def buildParser() -> argparse.ArgumentParser:
                               help="Abort if more than this share of completed courses "
                                    f"look orphaned (default: {DEFAULT_MAX_CANDIDATE_RATIO}); "
                                    "1.0 disables the check")
+
+    deleteOrphanParser = subparsers.add_parser(
+        "delete-orphans",
+        help="Delete demo students whose course offering no longer exists "
+             "(reports only without --confirm)")
+    deleteOrphanParser.add_argument("--confirm", action="store_true",
+                                    help="Actually delete; without this the command only reports")
+    deleteOrphanParser.add_argument("--ou-list", metavar="ID,ID",
+                                    help="Comma-separated org unit ids to scan instead of "
+                                         "the whole organization")
+    deleteOrphanParser.add_argument("--out", metavar="PATH",
+                                    help="Write the orphan list to a CSV file as well")
+    deleteOrphanParser.add_argument("--max-candidate-ratio", type=float,
+                                    default=DEFAULT_MAX_CANDIDATE_RATIO, metavar="RATIO",
+                                    help="Abort if more than this share of completed courses "
+                                         f"look orphaned (default: "
+                                         f"{DEFAULT_MAX_CANDIDATE_RATIO}); 1.0 disables the check")
 
     statusParser = subparsers.add_parser(
         "status", help="Show recent runs and metrics from the database")
@@ -235,6 +255,58 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
+    """Delete demo students whose course offering no longer exists.
+
+    Scans exactly as find-orphans does, then deletes only the orphans that
+    scan confirmed. Without --confirm it reports and stops, so the same
+    command shows what it would do before it does it.
+    """
+    setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
+    db = MetricsDb(config.dbPath)
+    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    try:
+        report = findOrphanedDemoStudents(
+            api, config, db,
+            ouList=_parseOuList(args.ou_list),
+            maxCandidateRatio=args.max_candidate_ratio,
+        )
+
+        if args.out:
+            _writeOrphanCsv(report, Path(args.out))
+
+        if not report.orphans:
+            print("\nNo orphaned demo students found; nothing to delete.")
+            _printOrphanSummary(report)
+            return 0
+
+        if not args.confirm:
+            _printOrphanSummary(report)
+            print(f"\n  Nothing was deleted. Re-run with --confirm to delete these "
+                  f"{len(report.orphans)} demo students.")
+            return 0
+
+        print(f"\nDeleting {len(report.orphans)} orphaned demo students...")
+        fileLogger.info(f"delete-orphans: deleting {len(report.orphans)} orphaned demo students")
+        outcome = deleteOrphanedDemoStudents(api, db, report)
+    finally:
+        api.close()
+        db.close()
+
+    print("\nDelete summary")
+    print(f"  Completed courses:    {report.completedCourseCount}")
+    print(f"  Candidates confirmed: {report.candidatesChecked}")
+    print(f"  Orphaned:             {len(report.orphans)}")
+    print(f"  Deleted:              {outcome.deleted}")
+    print(f"  Failed:               {outcome.failed}")
+    print(f"  Unconfirmable:        {len(report.unreachable)}")
+    if args.out:
+        print(f"\n  Report written to {args.out}")
+    fileLogger.info(f"delete-orphans finished: {outcome.deleted} deleted, "
+                    f"{outcome.failed} failed")
+    return 0 if outcome.failed == 0 else 1
+
+
 def cmdStatus(config: AppConfig, showErrors: bool, limit: int) -> int:
     """Print recent runs or errors from the database."""
     db = MetricsDb(config.dbPath)
@@ -308,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmdRun(config, args)
         if args.command == "find-orphans":
             return cmdFindOrphans(config, args)
+        if args.command == "delete-orphans":
+            return cmdDeleteOrphans(config, args)
         if args.command == "status":
             return cmdStatus(config, showErrors=args.errors, limit=args.limit)
         if args.command == "import-legacy":

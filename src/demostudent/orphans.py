@@ -52,6 +52,12 @@ class OrphanScanApi(Protocol):
     def getUserByUsername(self, userName: str) -> dict[str, Any] | None: ...
 
 
+class OrphanDeleteApi(Protocol):
+    """The slice of D2lApiClient that deleting an orphan needs."""
+
+    def deleteUser(self, userId: int) -> None: ...
+
+
 class OrphanScanAborted(Exception):
     """The candidate set was too large to trust, so nothing was confirmed."""
 
@@ -65,6 +71,14 @@ class OrphanedDemoStudent:
     userId: int
     courseName: str | None
     courseCode: str | None
+
+
+@dataclass(frozen=True)
+class OrphanDeleteOutcome:
+    """Result of deleting the orphans in a report."""
+
+    deleted: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True)
@@ -171,3 +185,43 @@ def findOrphanedDemoStudents(
         orphans=orphans, unreachable=unreachable, alreadyGone=alreadyGone,
         completedCourseCount=len(completedRows), candidatesChecked=len(candidates),
     )
+
+
+def deleteOrphanedDemoStudents(
+    api: OrphanDeleteApi,
+    db: MetricsDb,
+    report: OrphanReport,
+    runId: int | None = None,
+    logFunc: Callable[[str], None] = print,
+) -> OrphanDeleteOutcome:
+    """Delete the demo students in a report and clear their database rows.
+
+    Acts only on orphans already confirmed by findOrphanedDemoStudents, so
+    no course is judged deleted here. A user that fails to delete keeps
+    its completedCourses row, leaving it on the books for a later retry,
+    and the failure is recorded in the errors table. One failure never
+    stops the rest.
+    """
+    deleted = 0
+    failed = 0
+
+    for orphan in report.orphans:
+        try:
+            api.deleteUser(orphan.userId)
+        except D2lApiError as error:
+            failed += 1
+            message = f"Could not delete {orphan.userName} (user {orphan.userId}): {error}"
+            logFunc(f"  ERROR {orphan.orgUnitId}: {message}")
+            fileLogger.error(message)
+            db.recordError(runId, orgUnitId=orphan.orgUnitId, phase="deleteOrphan",
+                           httpStatus=error.httpStatus, message=message)
+            continue
+
+        deleted += 1
+        db.clearCompleted([orphan.orgUnitId])
+        logFunc(f"  deleted {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+        fileLogger.info(
+            f"Deleted orphaned demo student {orphan.userName} (user {orphan.userId}); "
+            f"course offering {orphan.orgUnitId} no longer exists")
+
+    return OrphanDeleteOutcome(deleted=deleted, failed=failed)

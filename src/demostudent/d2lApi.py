@@ -212,6 +212,29 @@ class D2lApiClient:
         )
         return response.json()
 
+    def deleteUser(self, userId: int) -> None:
+        """Permanently delete a user.
+
+        D2L recovers a deleted user only through a support request, within
+        30 days, and only if no account has since reused their username.
+        Callers must be certain before reaching this.
+        """
+        self._request("DELETE", f"/d2l/api/lp/{self._lp()}/users/{userId}")
+
+    def setUserActivation(self, userId: int, isActive: bool) -> None:
+        """Activate or deactivate a user without touching the rest of the record.
+
+        The dedicated activation route takes only this flag. The general
+        user update route (PUT /users/{userId}) would replace every field
+        on the user with whatever the request body carried, so it is not
+        used for this.
+        """
+        self._request(
+            "PUT",
+            f"/d2l/api/lp/{self._lp()}/users/{userId}/activation",
+            json={"IsActive": isActive},
+        )
+
     def enrollUser(self, orgUnitId: int, userId: int, roleId: int) -> dict[str, Any]:
         """Enroll a user in an org unit (updates the role in place if enrolled)."""
         response = self._request(

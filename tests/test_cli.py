@@ -396,3 +396,93 @@ def test_findOrphansWritesCsvReport(configPath, storedTokens, tmp_path, capsys):
     content = reportPath.read_text()
     assert "orgUnitId,userName,userId,courseName,courseCode" in content
     assert "302,demo.302" in content
+
+
+@respx.mock
+def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
+    """Without --confirm the command reports and changes nothing."""
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+
+    exitCode = main(["--config", str(configPath), "delete-orphans"])
+    assert exitCode == 0
+    assert not deleteRoute.called
+    out = capsys.readouterr().out
+    assert "--confirm" in out
+    assert "demo.302" in out
+
+
+@respx.mock
+def test_deleteOrphansWithConfirmDeletes(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+        return_value=httpx.Response(200))
+
+    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
+    assert exitCode == 0
+    assert deleteRoute.called
+    assert "Deleted:              1" in capsys.readouterr().out
+
+
+@respx.mock
+def test_deleteOrphansClearsStaleRow(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+        return_value=httpx.Response(200))
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
+    capsys.readouterr()
+
+    # The stale row is gone, so a second scan finds nothing to do
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert "No orphaned demo students" in capsys.readouterr().out
+
+
+@respx.mock
+def test_deleteOrphansNeverDeletesAnUnconfirmableCourse(configPath, storedTokens, capsys):
+    """A 403 on the course lookup must not lead to a deletion."""
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=403)
+    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+
+    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
+    assert exitCode == 0
+    assert not deleteRoute.called
+    assert "1 could not be confirmed" in capsys.readouterr().out
+
+
+@respx.mock
+def test_deleteOrphansReportsFailureAndExitsOne(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+        return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
+
+    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
+    assert exitCode == 1
+    assert "Failed:               1" in capsys.readouterr().out

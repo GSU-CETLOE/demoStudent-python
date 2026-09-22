@@ -11,7 +11,8 @@ import pytest
 from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiError
 from demostudent.db import MetricsDb
-from demostudent.orphans import OrphanScanAborted, findOrphanedDemoStudents
+from demostudent.orphans import (OrphanScanAborted, deleteOrphanedDemoStudents,
+                                 findOrphanedDemoStudents)
 
 
 @pytest.fixture
@@ -202,3 +203,93 @@ def test_emptyCompletedCoursesScansNothing(config, db):
 
     assert report.orphans == []
     assert report.candidatesChecked == 0
+
+
+class DeletingFakeApi(FakeApi):
+    """FakeApi that also records user deletions."""
+
+    def __init__(self, *args, failingUserIds=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.deletedUserIds = []
+        self.failingUserIds = set(failingUserIds)
+
+    def deleteUser(self, userId):
+        if userId in self.failingUserIds:
+            raise D2lApiError("Not Authorized", httpStatus=403)
+        self.deletedUserIds.append(userId)
+
+
+def test_deleteRemovesTheOrphanedUser(config, db):
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert api.deletedUserIds == [9302]
+    assert outcome.deleted == 1
+    assert outcome.failed == 0
+
+
+def test_deleteClearsTheStaleCompletedCourseRow(config, db):
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert db.completedOrgUnitIds() == {300}
+
+
+def test_deleteFailureLeavesTheDatabaseRowInPlace(config, db):
+    """A user that could not be deleted must stay on the books for a retry."""
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
+                          failingUserIds={9302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert outcome.deleted == 0
+    assert outcome.failed == 1
+    assert db.completedOrgUnitIds() == {300, 302}  # row kept for the retry
+
+
+def test_deleteContinuesPastAFailure(config, db):
+    markCompleted(db, [300, 302, 303])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302, 303},
+                          failingUserIds={9302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert outcome.deleted == 1
+    assert outcome.failed == 1
+    assert api.deletedUserIds == [9303]
+    assert db.completedOrgUnitIds() == {300, 302}  # 303 cleared, 302 kept
+
+
+def test_deleteWithNoOrphansDoesNothing(config, db):
+    markCompleted(db, [300])
+    api = DeletingFakeApi(liveCourseIds=[300])
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert outcome.deleted == 0
+    assert api.deletedUserIds == []
+
+
+def test_deleteRecordsFailuresAsErrors(config, db):
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
+                          failingUserIds={9302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    deleteOrphanedDemoStudents(api, db, report, runId=7, logFunc=lambda _line: None)
+
+    errors = db.recentErrors(limit=5)
+    assert len(errors) == 1
+    assert errors[0]["phase"] == "deleteOrphan"
+    assert errors[0]["orgUnitId"] == 302
+    assert errors[0]["httpStatus"] == 403

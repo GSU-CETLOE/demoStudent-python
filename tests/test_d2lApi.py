@@ -272,3 +272,36 @@ def test_persistentServerErrorRaisesApiError(api):
     with pytest.raises(D2lApiError) as excInfo:
         api.whoAmI()
     assert excInfo.value.httpStatus == 500
+
+
+@respx.mock
+def test_deleteUserCallsTheDeleteRoute(api):
+    mockVersions()
+    route = respx.delete(f"{BASE}/d2l/api/lp/1.47/users/9002").mock(
+        return_value=httpx.Response(200)
+    )
+    api.deleteUser(9002)
+    assert route.called
+
+
+@respx.mock
+def test_deleteUserRaisesOnForbidden(api):
+    mockVersions()
+    respx.delete(f"{BASE}/d2l/api/lp/1.47/users/9002").mock(
+        return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]})
+    )
+    with pytest.raises(D2lApiError) as excInfo:
+        api.deleteUser(9002)
+    assert excInfo.value.httpStatus == 403
+
+
+@respx.mock
+def test_setUserActivationSendsOnlyTheFlag(api):
+    """The activation route takes one boolean; it never rewrites the record."""
+    mockVersions()
+    route = respx.put(f"{BASE}/d2l/api/lp/1.47/users/9002/activation").mock(
+        return_value=httpx.Response(200)
+    )
+    api.setUserActivation(9002, isActive=False)
+    import json
+    assert json.loads(route.calls.last.request.content) == {"IsActive": False}
