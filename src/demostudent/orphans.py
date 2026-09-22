@@ -172,28 +172,44 @@ def findOrphanedDemoStudents(
 
     for row in candidates:
         orgUnitId = row["orgUnitId"]
+
+        def skipUnconfirmable(reason: str) -> None:
+            """Leave a course alone because its state could not be established."""
+            unreachable.append(orgUnitId)
+            logFunc(f"  {orgUnitId}: skipped - cannot confirm ({reason})")
+            fileLogger.warning(
+                f"Orphan scan could not confirm org unit {orgUnitId}: {reason}")
+
         try:
             api.getOrgUnit(orgUnitId)
         except D2lApiError as error:
-            if error.httpStatus == 404:
-                userName, userId = _resolveDemoStudent(api, config, row)
-                if userId is None:
-                    alreadyGone.append(orgUnitId)
-                    logFunc(f"  {orgUnitId}: course deleted, demo student already gone")
-                    continue
-                orphans.append(OrphanedDemoStudent(
-                    orgUnitId=orgUnitId, userName=userName, userId=userId,
-                    courseName=row["courseName"], courseCode=row["courseCode"],
-                ))
-                logFunc(f"  {orgUnitId}: ORPHANED - {userName} (course deleted)")
+            if error.httpStatus != 404:
+                skipUnconfirmable(f"HTTP {error.httpStatus}: {error}")
                 continue
-            unreachable.append(orgUnitId)
-            logFunc(f"  {orgUnitId}: skipped - cannot confirm "
-                    f"(HTTP {error.httpStatus}: {error})")
-            fileLogger.warning(
-                f"Orphan scan could not confirm org unit {orgUnitId}: "
-                f"HTTP {error.httpStatus}: {error}")
+        except Exception as error:
+            # A timeout or malformed response proves nothing either way.
+            skipUnconfirmable(f"{type(error).__name__}: {error}")
             continue
+        else:
+            continue  # 200: the course is alive, so nothing is orphaned here
+
+        # Only a 404 reaches this point: the course offering is gone.
+        try:
+            userName, userId = _resolveDemoStudent(api, config, row)
+        except Exception as error:
+            skipUnconfirmable(f"user lookup failed - {type(error).__name__}: {error}")
+            continue
+
+        if userId is None:
+            alreadyGone.append(orgUnitId)
+            logFunc(f"  {orgUnitId}: course deleted, demo student already gone")
+            continue
+
+        orphans.append(OrphanedDemoStudent(
+            orgUnitId=orgUnitId, userName=userName, userId=userId,
+            courseName=row["courseName"], courseCode=row["courseCode"],
+        ))
+        logFunc(f"  {orgUnitId}: ORPHANED - {userName} (course deleted)")
 
     return OrphanReport(
         orphans=orphans, unreachable=unreachable, alreadyGone=alreadyGone,
@@ -221,8 +237,8 @@ def deleteOrphanedDemoStudents(
     Acts only on orphans already confirmed by findOrphanedDemoStudents, so
     no course is judged deleted here. A user that fails keeps its
     completedCourses row, leaving it on the books for a later retry, and
-    the failure is recorded in the errors table. One failure never stops
-    the rest.
+    the failure is recorded in the errors table. Any failure is caught,
+    not just an API error, so one bad user never abandons the rest.
     """
     deleted = 0
     failed = 0
@@ -235,14 +251,20 @@ def deleteOrphanedDemoStudents(
                 api.deleteUser(orphan.userId)
             else:
                 api.setUserActivation(orphan.userId, isActive=False)
-        except D2lApiError as error:
+        except Exception as error:
             failed += 1
+            if isinstance(error, D2lApiError):
+                httpStatus = error.httpStatus
+                detail = str(error)
+            else:
+                httpStatus = None
+                detail = f"{type(error).__name__}: {error}"
             message = (f"Could not {actionName} {orphan.userName} "
-                       f"(user {orphan.userId}): {error}")
+                       f"(user {orphan.userId}): {detail}")
             logFunc(f"  ERROR {orphan.orgUnitId}: {message}")
             fileLogger.error(message)
             db.recordError(runId, orgUnitId=orphan.orgUnitId, phase="deleteOrphan",
-                           httpStatus=error.httpStatus, message=message)
+                           httpStatus=httpStatus, message=message)
             continue
 
         deleted += 1

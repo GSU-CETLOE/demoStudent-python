@@ -341,3 +341,60 @@ def test_failedDeactivationKeepsTheRow(config, db):
 
     assert outcome.failed == 1
     assert db.completedOrgUnitIds() == {300, 302}
+
+
+def test_nonApiErrorDuringConfirmationIsSkippedNotDeleted(config, db):
+    """A timeout is not proof of deletion, and must not abort the scan."""
+    class TimingOutApi(FakeApi):
+        def getOrgUnit(self, orgUnitId):
+            self.orgUnitLookups.append(orgUnitId)
+            if orgUnitId == 301:
+                raise TimeoutError("connection timed out")
+            return super().getOrgUnit(orgUnitId)
+
+    markCompleted(db, [300, 301, 302])
+    api = TimingOutApi(liveCourseIds=[300], deletedCourseIds={302})
+
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert report.unreachable == [301]
+    # the scan carried on and still found the genuinely deleted course
+    assert [orphan.orgUnitId for orphan in report.orphans] == [302]
+
+
+def test_userLookupFailureDuringConfirmationIsSkipped(config, db):
+    """The user lookup for a legacy row can fail too; that is not an orphan."""
+    class FailingUserLookupApi(FakeApi):
+        def getUserByUsername(self, userName):
+            raise D2lApiError("Not Authorized", httpStatus=403)
+
+    db.importCompletedOrgUnits([302])
+    api = FailingUserLookupApi(liveCourseIds=[], deletedCourseIds={302})
+
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert report.orphans == []
+    assert report.unreachable == [302]
+
+
+def test_nonApiErrorDuringCleanupIsRecordedAndOthersContinue(config, db):
+    """A timeout mid-cleanup must not abandon the remaining orphans."""
+    class TimingOutApi(DeletingFakeApi):
+        def setUserActivation(self, userId, isActive):
+            if userId == 9302:
+                raise TimeoutError("connection timed out")
+            return super().setUserActivation(userId, isActive)
+
+    markCompleted(db, [300, 302, 303])
+    api = TimingOutApi(liveCourseIds=[300], deletedCourseIds={302, 303})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, runId=9,
+                                         logFunc=lambda _line: None)
+
+    assert outcome.failed == 1
+    assert outcome.deleted == 1
+    assert api.deactivatedUserIds == [9303]
+    assert db.completedOrgUnitIds() == {300, 302}  # the failed one keeps its row
+    errors = db.recentErrors(limit=5)
+    assert "TimeoutError" in errors[0]["message"]
