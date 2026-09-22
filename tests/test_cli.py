@@ -419,7 +419,30 @@ def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
 
 
 @respx.mock
-def test_deleteOrphansWithConfirmDeletes(configPath, storedTokens, capsys):
+def test_deleteOrphansWithConfirmDeactivatesByDefault(configPath, storedTokens, capsys):
+    """Deletion is effectively irreversible, so --confirm alone deactivates."""
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    activationRoute = respx.put(
+        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
+        return_value=httpx.Response(200))
+
+    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
+    assert exitCode == 0
+    assert activationRoute.called
+    assert not deleteRoute.called
+    assert json.loads(activationRoute.calls.last.request.content) == {"IsActive": False}
+    assert "Deactivated:          1" in capsys.readouterr().out
+
+
+@respx.mock
+def test_deleteOrphansHardDeleteRemovesTheUser(configPath, storedTokens, capsys):
     mockDiscovery([301, 302])
     mockCourseWork()
     assert main(["--config", str(configPath), "run"]) == 0
@@ -430,10 +453,27 @@ def test_deleteOrphansWithConfirmDeletes(configPath, storedTokens, capsys):
     deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
         return_value=httpx.Response(200))
 
-    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
+    exitCode = main(["--config", str(configPath), "delete-orphans",
+                     "--confirm", "--hard-delete"])
     assert exitCode == 0
     assert deleteRoute.called
-    assert "Deleted:              1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Deleted:              1" in out
+    assert "support request" in out  # the irreversibility is stated before acting
+
+
+@respx.mock
+def test_deleteOrphansWithoutConfirmNamesTheDefaultAction(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+
+    assert main(["--config", str(configPath), "delete-orphans"]) == 0
+    assert "deactivate these 1" in capsys.readouterr().out
 
 
 @respx.mock
@@ -441,7 +481,7 @@ def test_deleteOrphansClearsStaleRow(configPath, storedTokens, capsys):
     mockDiscovery([301, 302])
     mockCourseWork()
     assert main(["--config", str(configPath), "run"]) == 0
-    respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+    respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(200))
     mockDiscovery([301])
     mockOrgUnit(302, status=404)
@@ -464,10 +504,13 @@ def test_deleteOrphansNeverDeletesAnUnconfirmableCourse(configPath, storedTokens
     mockDiscovery([301])
     mockOrgUnit(302, status=403)
     deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    activationRoute = respx.put(
+        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation")
 
     exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
     assert exitCode == 0
     assert not deleteRoute.called
+    assert not activationRoute.called
     assert "1 could not be confirmed" in capsys.readouterr().out
 
 
@@ -480,7 +523,7 @@ def test_deleteOrphansReportsFailureAndExitsOne(configPath, storedTokens, capsys
 
     mockDiscovery([301])
     mockOrgUnit(302, status=404)
-    respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+    respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
 
     exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])

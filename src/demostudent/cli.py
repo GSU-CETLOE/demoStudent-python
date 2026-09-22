@@ -10,9 +10,10 @@ Commands:
     demo-student status [--errors]      show recent runs and errors
     demo-student find-orphans [--out]   report demo students whose course
                                          offering has been deleted
-    demo-student delete-orphans --confirm
-                                        delete the demo students find-orphans
-                                         reports (reports only without --confirm)
+    demo-student delete-orphans --confirm [--hard-delete]
+                                        deactivate (or delete) the demo students
+                                         find-orphans reports; reports only
+                                         without --confirm
     demo-student import-legacy FILE     seed completed courses from the legacy list
 """
 
@@ -88,10 +89,14 @@ def buildParser() -> argparse.ArgumentParser:
 
     deleteOrphanParser = subparsers.add_parser(
         "delete-orphans",
-        help="Delete demo students whose course offering no longer exists "
+        help="Deactivate demo students whose course offering no longer exists "
              "(reports only without --confirm)")
     deleteOrphanParser.add_argument("--confirm", action="store_true",
-                                    help="Actually delete; without this the command only reports")
+                                    help="Actually act; without this the command only reports")
+    deleteOrphanParser.add_argument("--hard-delete", action="store_true",
+                                    help="Permanently delete instead of deactivating. D2L "
+                                         "reverses this only by support request, within 30 "
+                                         "days, and only while the username is unused")
     deleteOrphanParser.add_argument("--ou-list", metavar="ID,ID",
                                     help="Comma-separated org unit ids to scan instead of "
                                          "the whole organization")
@@ -280,29 +285,36 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
             _printOrphanSummary(report)
             return 0
 
+        verb = "delete" if args.hard_delete else "deactivate"
         if not args.confirm:
             _printOrphanSummary(report)
-            print(f"\n  Nothing was deleted. Re-run with --confirm to delete these "
+            print(f"\n  Nothing was changed. Re-run with --confirm to {verb} these "
                   f"{len(report.orphans)} demo students.")
             return 0
 
-        print(f"\nDeleting {len(report.orphans)} orphaned demo students...")
-        fileLogger.info(f"delete-orphans: deleting {len(report.orphans)} orphaned demo students")
-        outcome = deleteOrphanedDemoStudents(api, db, report)
+        if args.hard_delete:
+            print("\n  Hard delete: D2L reverses this only by support request, within 30 "
+                  "days, and only while no new account has taken the same username.")
+
+        print(f"\n{verb.capitalize()[:-1]}ing {len(report.orphans)} orphaned demo students...")
+        fileLogger.info(f"delete-orphans: about to {verb} {len(report.orphans)} "
+                        f"orphaned demo students")
+        outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=args.hard_delete)
     finally:
         api.close()
         db.close()
 
-    print("\nDelete summary")
+    print("\nCleanup summary")
     print(f"  Completed courses:    {report.completedCourseCount}")
     print(f"  Candidates confirmed: {report.candidatesChecked}")
     print(f"  Orphaned:             {len(report.orphans)}")
-    print(f"  Deleted:              {outcome.deleted}")
+    actionLabel = f"{outcome.actionName.capitalize()}:"
+    print(f"  {actionLabel:<21} {outcome.deleted}")
     print(f"  Failed:               {outcome.failed}")
     print(f"  Unconfirmable:        {len(report.unreachable)}")
     if args.out:
         print(f"\n  Report written to {args.out}")
-    fileLogger.info(f"delete-orphans finished: {outcome.deleted} deleted, "
+    fileLogger.info(f"delete-orphans finished: {outcome.deleted} {outcome.actionName}, "
                     f"{outcome.failed} failed")
     return 0 if outcome.failed == 0 else 1
 

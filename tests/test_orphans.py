@@ -206,11 +206,12 @@ def test_emptyCompletedCoursesScansNothing(config, db):
 
 
 class DeletingFakeApi(FakeApi):
-    """FakeApi that also records user deletions."""
+    """FakeApi that also records deletions and deactivations."""
 
     def __init__(self, *args, failingUserIds=(), **kwargs):
         super().__init__(*args, **kwargs)
         self.deletedUserIds = []
+        self.deactivatedUserIds = []
         self.failingUserIds = set(failingUserIds)
 
     def deleteUser(self, userId):
@@ -218,13 +219,20 @@ class DeletingFakeApi(FakeApi):
             raise D2lApiError("Not Authorized", httpStatus=403)
         self.deletedUserIds.append(userId)
 
+    def setUserActivation(self, userId, isActive):
+        if userId in self.failingUserIds:
+            raise D2lApiError("Not Authorized", httpStatus=403)
+        assert isActive is False, "orphan cleanup only ever deactivates"
+        self.deactivatedUserIds.append(userId)
+
 
 def test_deleteRemovesTheOrphanedUser(config, db):
     markCompleted(db, [300, 302])
     api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
+                                         logFunc=lambda _line: None)
 
     assert api.deletedUserIds == [9302]
     assert outcome.deleted == 1
@@ -236,7 +244,8 @@ def test_deleteClearsTheStaleCompletedCourseRow(config, db):
     api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
+                               logFunc=lambda _line: None)
 
     assert db.completedOrgUnitIds() == {300}
 
@@ -248,7 +257,8 @@ def test_deleteFailureLeavesTheDatabaseRowInPlace(config, db):
                           failingUserIds={9302})
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
+                                         logFunc=lambda _line: None)
 
     assert outcome.deleted == 0
     assert outcome.failed == 1
@@ -261,7 +271,8 @@ def test_deleteContinuesPastAFailure(config, db):
                           failingUserIds={9302})
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
+                                         logFunc=lambda _line: None)
 
     assert outcome.deleted == 1
     assert outcome.failed == 1
@@ -274,7 +285,8 @@ def test_deleteWithNoOrphansDoesNothing(config, db):
     api = DeletingFakeApi(liveCourseIds=[300])
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
+                                         logFunc=lambda _line: None)
 
     assert outcome.deleted == 0
     assert api.deletedUserIds == []
@@ -286,10 +298,46 @@ def test_deleteRecordsFailuresAsErrors(config, db):
                           failingUserIds={9302})
     report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
 
-    deleteOrphanedDemoStudents(api, db, report, runId=7, logFunc=lambda _line: None)
+    deleteOrphanedDemoStudents(api, db, report, runId=7, hardDelete=True,
+                               logFunc=lambda _line: None)
 
     errors = db.recentErrors(limit=5)
     assert len(errors) == 1
     assert errors[0]["phase"] == "deleteOrphan"
     assert errors[0]["orgUnitId"] == 302
     assert errors[0]["httpStatus"] == 403
+
+
+def test_defaultDeactivatesRatherThanDeletes(config, db):
+    """Deletion is effectively irreversible, so it is never the default."""
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert api.deactivatedUserIds == [9302]
+    assert api.deletedUserIds == []
+    assert outcome.deleted == 1
+
+
+def test_deactivationClearsTheStaleRowToo(config, db):
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert db.completedOrgUnitIds() == {300}
+
+
+def test_failedDeactivationKeepsTheRow(config, db):
+    markCompleted(db, [300, 302])
+    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
+                          failingUserIds={9302})
+    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+
+    assert outcome.failed == 1
+    assert db.completedOrgUnitIds() == {300, 302}

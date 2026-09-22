@@ -19,6 +19,13 @@ As a second guard, a scan whose candidate set exceeds a share of all
 completed courses aborts without confirming anything, on the theory that
 a sudden mass orphaning is far more likely to be a broken service account
 than a real mass deletion.
+
+Cleanup deactivates by default rather than deleting. D2L reverses a user
+deletion only through a support request, only within 30 days, and only
+while no new account has taken the same username; since this tool reuses
+demo.{orgUnitId} on every run, a recreated demo student closes that
+window permanently. Deactivation blocks the account, keeps its
+enrollments, and can be undone at any time.
 """
 
 import logging
@@ -53,9 +60,10 @@ class OrphanScanApi(Protocol):
 
 
 class OrphanDeleteApi(Protocol):
-    """The slice of D2lApiClient that deleting an orphan needs."""
+    """The slice of D2lApiClient that retiring an orphan needs."""
 
     def deleteUser(self, userId: int) -> None: ...
+    def setUserActivation(self, userId: int, isActive: bool) -> None: ...
 
 
 class OrphanScanAborted(Exception):
@@ -75,10 +83,16 @@ class OrphanedDemoStudent:
 
 @dataclass(frozen=True)
 class OrphanDeleteOutcome:
-    """Result of deleting the orphans in a report."""
+    """Result of retiring the orphans in a report."""
 
     deleted: int = 0
     failed: int = 0
+    hardDeleted: bool = False
+
+    @property
+    def actionName(self) -> str:
+        """What was done to the orphans, for display."""
+        return "deleted" if self.hardDeleted else "deactivated"
 
 
 @dataclass(frozen=True)
@@ -192,25 +206,39 @@ def deleteOrphanedDemoStudents(
     db: MetricsDb,
     report: OrphanReport,
     runId: int | None = None,
+    hardDelete: bool = False,
     logFunc: Callable[[str], None] = print,
 ) -> OrphanDeleteOutcome:
-    """Delete the demo students in a report and clear their database rows.
+    """Retire the demo students in a report and clear their database rows.
+
+    Deactivates by default. Deactivation blocks the account, keeps its
+    enrollments, and can be undone at any time. Pass hardDelete=True to
+    delete instead, which D2L reverses only through a support request,
+    only within 30 days, and only while no new account has taken the same
+    username. This tool reuses demo.{orgUnitId} on every run, so a
+    recreated demo student closes that window for good.
 
     Acts only on orphans already confirmed by findOrphanedDemoStudents, so
-    no course is judged deleted here. A user that fails to delete keeps
-    its completedCourses row, leaving it on the books for a later retry,
-    and the failure is recorded in the errors table. One failure never
-    stops the rest.
+    no course is judged deleted here. A user that fails keeps its
+    completedCourses row, leaving it on the books for a later retry, and
+    the failure is recorded in the errors table. One failure never stops
+    the rest.
     """
     deleted = 0
     failed = 0
+    actionName = "delete" if hardDelete else "deactivate"
+    pastTense = "Deleted" if hardDelete else "Deactivated"
 
     for orphan in report.orphans:
         try:
-            api.deleteUser(orphan.userId)
+            if hardDelete:
+                api.deleteUser(orphan.userId)
+            else:
+                api.setUserActivation(orphan.userId, isActive=False)
         except D2lApiError as error:
             failed += 1
-            message = f"Could not delete {orphan.userName} (user {orphan.userId}): {error}"
+            message = (f"Could not {actionName} {orphan.userName} "
+                       f"(user {orphan.userId}): {error}")
             logFunc(f"  ERROR {orphan.orgUnitId}: {message}")
             fileLogger.error(message)
             db.recordError(runId, orgUnitId=orphan.orgUnitId, phase="deleteOrphan",
@@ -219,9 +247,10 @@ def deleteOrphanedDemoStudents(
 
         deleted += 1
         db.clearCompleted([orphan.orgUnitId])
-        logFunc(f"  deleted {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+        logFunc(f"  {pastTense.lower()} {orphan.userName} "
+                f"(course {orphan.orgUnitId} no longer exists)")
         fileLogger.info(
-            f"Deleted orphaned demo student {orphan.userName} (user {orphan.userId}); "
-            f"course offering {orphan.orgUnitId} no longer exists")
+            f"{pastTense} orphaned demo student {orphan.userName} "
+            f"(user {orphan.userId}); course offering {orphan.orgUnitId} no longer exists")
 
-    return OrphanDeleteOutcome(deleted=deleted, failed=failed)
+    return OrphanDeleteOutcome(deleted=deleted, failed=failed, hardDeleted=hardDelete)
