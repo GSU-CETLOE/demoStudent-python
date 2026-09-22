@@ -77,6 +77,19 @@ class MetricsDb:
             rows = self._connection.execute("SELECT orgUnitId FROM completedCourses").fetchall()
         return {row["orgUnitId"] for row in rows}
 
+    def completedCourses(self) -> list[dict]:
+        """Every completed course row, including the demo student recorded for it.
+
+        Rows seeded by import-legacy carry only an org unit id, so userName
+        and userId may be None.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT orgUnitId, courseName, courseCode, userName, userId"
+                " FROM completedCourses ORDER BY orgUnitId"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def markCourseCompleted(
         self,
         orgUnitId: int,

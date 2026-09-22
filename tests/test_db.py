@@ -32,6 +32,28 @@ def test_completedCoursesRoundTrip(db):
     assert db.completedOrgUnitIds() == {111}
 
 
+def test_completedCoursesReturnsStoredDetails(db):
+    runId = db.startRun()
+    db.markCourseCompleted(
+        orgUnitId=111, courseName="Biology 101", courseCode="BIO101",
+        userName="demo.111", userId=9001, runId=runId,
+    )
+    rows = db.completedCourses()
+    assert rows == [{"orgUnitId": 111, "courseName": "Biology 101",
+                     "courseCode": "BIO101", "userName": "demo.111", "userId": 9001}]
+
+
+def test_completedCoursesLeavesLegacyRowsWithoutUserDetails(db):
+    db.importCompletedOrgUnits([222])
+    rows = db.completedCourses()
+    assert rows == [{"orgUnitId": 222, "courseName": None, "courseCode": None,
+                     "userName": None, "userId": None}]
+
+
+def test_completedCoursesIsEmptyWhenNothingRecorded(db):
+    assert db.completedCourses() == []
+
+
 def test_clearCompletedRemovesOnlyGivenIds(db):
     runId = db.startRun()
     for orgUnitId in (111, 222, 333):
