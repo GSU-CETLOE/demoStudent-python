@@ -51,6 +51,12 @@ DEFAULT_MAX_CANDIDATE_RATIO = 0.05
 MIN_CANDIDATES_BEFORE_ABORT = 25
 
 
+class DemoStudentScanApi(Protocol):
+    """The slice of D2lApiClient that the inventory scan needs."""
+
+    def iterUsers(self) -> Iterator[dict[str, Any]]: ...
+
+
 class OrphanScanApi(Protocol):
     """The slice of D2lApiClient that orphan detection needs."""
 
@@ -70,6 +76,10 @@ class OrphanScanAborted(Exception):
     """The candidate set was too large to trust, so nothing was confirmed."""
 
 
+class DemoStudentScanAborted(Exception):
+    """The user walk could not be trusted to see what it needed to see."""
+
+
 @dataclass(frozen=True)
 class OrphanedDemoStudent:
     """A demo student whose course offering is confirmed deleted."""
@@ -79,6 +89,16 @@ class OrphanedDemoStudent:
     userId: int
     courseName: str | None
     courseCode: str | None
+
+
+@dataclass(frozen=True)
+class DemoStudentScanResult:
+    """What one walk of the D2L user list turned up."""
+
+    usersWalked: int = 0
+    demoStudentsFound: int = 0
+    newlyRecorded: int = 0
+    unparsed: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -373,3 +393,95 @@ def confirmCourseStates(
         live += 1
 
     return CourseStateResult(live=live, deleted=deleted, unknown=unknown)
+
+
+# Report progress every this many users, so a walk over a large tenant
+# shows signs of life without flooding the console.
+SCAN_PROGRESS_INTERVAL = 5000
+
+
+def scanDemoStudents(
+    api: DemoStudentScanApi,
+    config: AppConfig,
+    db: MetricsDb,
+    logFunc: Callable[[str], None] = print,
+) -> DemoStudentScanResult:
+    """Walk D2L's user list and record every demo student into the inventory.
+
+    This is the half that makes orphan detection work on old courses. The
+    database's completedCourses table cannot answer the question, because
+    retention prunes it after a year and the oldest demo students are the
+    ones most likely to have lost their course. Reading the accounts
+    straight from D2L skips that problem: a demo student's username
+    carries the org unit id it belongs to, so the inventory is
+    self-describing.
+
+    Nothing is judged here. The scan records what exists; deciding which
+    courses are gone is confirmCourseStates.
+
+    Raises DemoStudentScanAborted if usernames are not visible. D2L
+    filters this listing by what the calling role may see and withholds
+    individual fields the same way, without saying so in the response, so
+    a role that cannot read usernames would match nothing and look like a
+    tenant with no demo students at all.
+    """
+    usersWalked = 0
+    demoStudents: list[dict] = []
+    unparsed: list[str] = []
+    sawAnyUsername = False
+
+    for user in api.iterUsers():
+        usersWalked += 1
+        userName = user.get("UserName")
+        if userName:
+            sawAnyUsername = True
+        elif usersWalked <= 1:
+            # Fail on the first user rather than walking a whole tenant
+            # to arrive at an empty answer.
+            raise DemoStudentScanAborted(
+                "The first user came back with no UserName. D2L withholds fields "
+                "the calling role cannot see, so a role without username visibility "
+                "matches no demo students and reports a clean empty result. Grant "
+                "See Usernames under User Information Privacy, then re-run.")
+
+        if not userName:
+            continue
+
+        orgUnitId = parseDemoStudentUsername(userName, config)
+        if orgUnitId is None:
+            if userName.lower().startswith(f"{config.usernamePrefix}.".lower()):
+                # Looks like one of ours but carries no usable org unit id.
+                unparsed.append(userName)
+            continue
+
+        demoStudents.append({
+            "userId": user["UserId"],
+            "userName": userName,
+            "orgUnitId": orgUnitId,
+            "isActive": bool(user.get("Activation", {}).get("IsActive", True)),
+        })
+
+        if usersWalked % SCAN_PROGRESS_INTERVAL == 0:
+            logFunc(f"  walked {usersWalked} users, {len(demoStudents)} demo students so far")
+
+    if usersWalked and not sawAnyUsername:
+        raise DemoStudentScanAborted(
+            f"Walked {usersWalked} users and not one carried a UserName. D2L "
+            f"withholds fields the calling role cannot see. Grant See Usernames "
+            f"under User Information Privacy, then re-run.")
+
+    newlyRecorded = db.recordDemoStudents(demoStudents)
+
+    logFunc(f"Walked {usersWalked} users; found {len(demoStudents)} demo students "
+            f"({newlyRecorded} new to the inventory).")
+    if unparsed:
+        logFunc(f"  {len(unparsed)} accounts match the '{config.usernamePrefix}.' prefix "
+                f"but carry no usable org unit id; left alone.")
+    fileLogger.info(
+        f"Demo student scan: walked {usersWalked} users, found {len(demoStudents)}, "
+        f"{newlyRecorded} new, {len(unparsed)} unparsed")
+
+    return DemoStudentScanResult(
+        usersWalked=usersWalked, demoStudentsFound=len(demoStudents),
+        newlyRecorded=newlyRecorded, unparsed=unparsed,
+    )

@@ -165,3 +165,118 @@ def test_confirmReportsCounts(config, db):
     assert result.live == 1
     assert result.deleted == 1
     assert result.unknown == 1
+
+
+class WalkingApi:
+    """Stand-in D2L whose user listing returns a fixed population."""
+
+    def __init__(self, users):
+        self.users = users
+        self.walked = 0
+
+    def iterUsers(self):
+        self.walked += 1
+        yield from self.users
+
+    def getUserByUsername(self, userName):
+        for user in self.users:
+            if user["UserName"].lower() == userName.lower():
+                return user
+        return None
+
+
+def userItem(userId, userName, isActive=True):
+    return {"UserId": userId, "UserName": userName,
+            "Activation": {"IsActive": isActive}}
+
+
+def test_scanRecordsOnlyDemoStudents(config, db):
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([
+        userItem(9301, "demo.301"),
+        userItem(1, "jsmith"),
+        userItem(2, "demo.legacy"),
+        userItem(9302, "demo.302"),
+    ])
+
+    result = scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    recorded = db.demoStudents()
+    assert [student["userName"] for student in recorded] == ["demo.301", "demo.302"]
+    assert result.demoStudentsFound == 2
+    assert result.usersWalked == 4
+
+
+def test_scanRecordsTheOrgUnitFromTheUsername(config, db):
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([userItem(9301, "demo.2469900")])
+    scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert db.demoStudents()[0]["orgUnitId"] == 2469900
+
+
+def test_scanRecordsActivationState(config, db):
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([
+        userItem(9301, "demo.301", isActive=True),
+        userItem(9302, "demo.302", isActive=False),
+    ])
+    scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    byName = {student["userName"]: student for student in db.demoStudents()}
+    assert byName["demo.301"]["isActive"] == 1
+    assert byName["demo.302"]["isActive"] == 0
+
+
+def test_scanReportsUnparseablePrefixMatchesSeparately(config, db):
+    """demo.legacy is not ours to act on, but it should not vanish silently."""
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([userItem(2, "demo.legacy"), userItem(3, "demo.")])
+    result = scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert result.demoStudentsFound == 0
+    assert sorted(result.unparsed) == ["demo.", "demo.legacy"]
+
+
+def test_rescanUpdatesRatherThanDuplicates(config, db):
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([userItem(9301, "demo.301", isActive=True)])
+    scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    api.users = [userItem(9301, "demo.301", isActive=False)]
+    scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    students = db.demoStudents()
+    assert len(students) == 1
+    assert students[0]["isActive"] == 0
+
+
+def test_scanVerifiesUsernameVisibilityFirst(config, db):
+    """D2L hides fields the role cannot see, which would match zero users."""
+    from demostudent.orphans import DemoStudentScanAborted, scanDemoStudents
+
+    class BlindApi(WalkingApi):
+        def iterUsers(self):
+            self.walked += 1
+            yield {"UserId": 9301, "Activation": {"IsActive": True}}  # no UserName
+
+    api = BlindApi([])
+    with pytest.raises(DemoStudentScanAborted) as excInfo:
+        scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert "UserName" in str(excInfo.value)
+
+
+def test_scanWithNoUsersRecordsNothing(config, db):
+    from demostudent.orphans import scanDemoStudents
+
+    api = WalkingApi([])
+    result = scanDemoStudents(api, config, db, logFunc=lambda _line: None)
+
+    assert result.demoStudentsFound == 0
+    assert db.demoStudents() == []

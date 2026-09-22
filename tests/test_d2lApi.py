@@ -305,3 +305,106 @@ def test_setUserActivationSendsOnlyTheFlag(api):
     api.setUserActivation(9002, isActive=False)
     import json
     assert json.loads(route.calls.last.request.content) == {"IsActive": False}
+
+
+def userItem(userId, userName, isActive=True):
+    """One entry as GET /users/ returns it (User.UserData)."""
+    return {
+        "OrgId": 6606, "UserId": userId, "FirstName": "Demo", "MiddleName": None,
+        "LastName": "Student", "UserName": userName, "ExternalEmail": None,
+        "OrgDefinedId": None, "UniqueIdentifier": userName,
+        "Activation": {"IsActive": isActive},
+        "DisplayName": "Demo Student", "LastAccessedDate": None, "Pronouns": "",
+    }
+
+
+@respx.mock
+def test_iterUsersFollowsPagingBookmarks(api):
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route.side_effect = [
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "9002", "HasMoreItems": True},
+            "Items": [userItem(9001, "demo.301"), userItem(9002, "demo.302")],
+        }),
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "9003", "HasMoreItems": False},
+            "Items": [userItem(9003, "demo.303")],
+        }),
+    ]
+    users = list(api.iterUsers())
+    assert [user["UserId"] for user in users] == [9001, 9002, 9003]
+    assert route.call_count == 2
+    # The server-supplied bookmark is echoed back, not one we computed
+    assert route.calls[1].request.url.params["bookmark"] == "9002"
+
+
+@respx.mock
+def test_iterUsersFirstPageSendsNoBookmark(api):
+    """A bookmark is the only parameter; userName would outrank it and break paging."""
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "9001", "HasMoreItems": False},
+            "Items": [userItem(9001, "demo.301")],
+        })
+    )
+    list(api.iterUsers())
+    assert "bookmark" not in route.calls.last.request.url.params
+    assert "userName" not in route.calls.last.request.url.params
+
+
+@respx.mock
+def test_iterUsersStopsOnEmptyFinalPage(api):
+    """The end may arrive as an empty page rather than a flag on a full one."""
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route.side_effect = [
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "9001", "HasMoreItems": True},
+            "Items": [userItem(9001, "demo.301")],
+        }),
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "9001", "HasMoreItems": True},
+            "Items": [],
+        }),
+    ]
+    users = list(api.iterUsers())
+    assert [user["UserId"] for user in users] == [9001]
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_iterUsersStopsWhenBookmarkDoesNotAdvance(api):
+    """A repeated bookmark would otherwise loop forever over one page."""
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route.side_effect = [
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "stuck", "HasMoreItems": True},
+            "Items": [userItem(9001, "demo.301")],
+        }),
+        httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "stuck", "HasMoreItems": True},
+            "Items": [userItem(9002, "demo.302")],
+        }),
+    ]
+    users = list(api.iterUsers())
+    # The second page repeated the bookmark, so the walk stopped rather
+    # than requesting it a third time.
+    assert [user["UserId"] for user in users] == [9001, 9002]
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_iterUsersStopsOnMissingBookmark(api):
+    """HasMoreItems true with no bookmark leaves nowhere to go."""
+    mockVersions()
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"HasMoreItems": True},
+            "Items": [userItem(9001, "demo.301")],
+        })
+    )
+    assert [user["UserId"] for user in api.iterUsers()] == [9001]
+    assert route.call_count == 1

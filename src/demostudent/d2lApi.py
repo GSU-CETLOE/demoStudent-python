@@ -151,6 +151,45 @@ class D2lApiClient:
             return None
         return response.json()
 
+    def iterUsers(self) -> Iterator[dict[str, Any]]:
+        """Every user the calling account may see, following paging bookmarks.
+
+        Sends no query parameter other than the bookmark. D2L picks among
+        orgDefinedId, userName, externalEmail and bookmark in that fixed
+        order regardless of URL order, so adding any of the first three
+        would silently outrank the bookmark and re-return page one
+        forever.
+
+        The bookmark D2L returns is a UserId, but it is echoed back as
+        given rather than recomputed from the last item, since the
+        server's value is the authoritative one.
+
+        Caution: D2L filters this listing by what the calling role may
+        see, and says so only in its documentation. A short list comes
+        back as a clean, well-formed result with no indication that
+        anything was withheld. Callers must not treat the result as a
+        complete census of the tenant.
+        """
+        bookmark: str | None = None
+        while True:
+            params: dict[str, Any] = {"bookmark": bookmark} if bookmark else {}
+            response = self._request(
+                "GET", f"/d2l/api/lp/{self._lp()}/users/", params=params)
+            page = response.json()
+            items = page["Items"]
+            yield from items
+
+            pagingInfo = page["PagingInfo"]
+            if not pagingInfo.get("HasMoreItems") or not items:
+                return
+
+            nextBookmark = pagingInfo.get("Bookmark")
+            # A bookmark that does not move would re-request the same page
+            # for as long as HasMoreItems stays true.
+            if not nextBookmark or nextBookmark == bookmark:
+                return
+            bookmark = nextBookmark
+
     def getEnrollment(self, orgUnitId: int, userId: int) -> dict[str, Any] | None:
         """A user's enrollment in an org unit; None when not enrolled.
 
