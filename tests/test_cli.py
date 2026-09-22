@@ -298,3 +298,101 @@ def test_authManualCommand(configPath, capsys, monkeypatch, tmp_path):
     saved = TokenStore(tmp_path / "working" / "token" / "token.json").load()
     assert saved is not None
     assert saved.accessToken == "new-access"
+
+
+def mockOrgUnit(orgUnitId, status=200):
+    """Org structure lookup for one course: 200 live, 404 deleted, 403 hidden."""
+    url = f"{BASE}/d2l/api/lp/1.47/orgstructure/{orgUnitId}"
+    if status == 200:
+        return respx.get(url).mock(return_value=httpx.Response(
+            200, json={"Identifier": str(orgUnitId), "Name": f"Course {orgUnitId}",
+                       "Code": f"C{orgUnitId}", "Type": {"Id": 3}}))
+    return respx.get(url).mock(return_value=httpx.Response(
+        status, json={"Errors": [{"Message": "Resource Not Found"}]}))
+
+
+@respx.mock
+def test_findOrphansReportsDeletedCourses(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302, 303])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    # 303's course offering has been deleted in D2L since the run
+    mockDiscovery([301, 302])
+    mockOrgUnit(303, status=404)
+
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 0
+    out = capsys.readouterr().out
+    assert "303" in out
+    assert "demo.303" in out
+    assert "Orphaned:             1" in out
+
+
+@respx.mock
+def test_findOrphansChangesNothing(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert not deleteRoute.called
+    # the completedCourses row is left in place by a report-only scan
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert "Orphaned:             1" in capsys.readouterr().out
+
+
+@respx.mock
+def test_findOrphansWithNothingOrphanedSaysSo(configPath, storedTokens, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301, 302])
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 0
+    assert "No orphaned demo students" in capsys.readouterr().out
+
+
+@respx.mock
+def test_findOrphansSkipsCoursesItCannotSee(configPath, storedTokens, capsys):
+    """A 403 is not proof of deletion; it must be reported, never deleted."""
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=403)
+
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 0
+    out = capsys.readouterr().out
+    assert "No orphaned demo students" in out
+    assert "1 could not be confirmed" in out
+
+
+@respx.mock
+def test_findOrphansWritesCsvReport(configPath, storedTokens, tmp_path, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(configPath), "run"]) == 0
+    capsys.readouterr()
+
+    mockDiscovery([301])
+    mockOrgUnit(302, status=404)
+    reportPath = tmp_path / "orphans.csv"
+
+    exitCode = main(["--config", str(configPath), "find-orphans",
+                     "--out", str(reportPath)])
+    assert exitCode == 0
+    content = reportPath.read_text()
+    assert "orgUnitId,userName,userId,courseName,courseCode" in content
+    assert "302,demo.302" in content

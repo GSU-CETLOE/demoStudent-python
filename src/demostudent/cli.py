@@ -8,10 +8,13 @@ Commands:
                                          already-completed courses instead of
                                          skipping them)
     demo-student status [--errors]      show recent runs and errors
+    demo-student find-orphans [--out]   report demo students whose course
+                                         offering has been deleted
     demo-student import-legacy FILE     seed completed courses from the legacy list
 """
 
 import argparse
+import csv
 import logging
 import sys
 from pathlib import Path
@@ -22,6 +25,8 @@ from .config import AppConfig, ConfigError, loadConfig
 from .d2lApi import D2lApiClient, D2lApiError
 from .db import MetricsDb
 from .logs import LOGGER_NAME, setupFileLogging
+from .orphans import (DEFAULT_MAX_CANDIDATE_RATIO, OrphanReport, OrphanScanAborted,
+                      findOrphanedDemoStudents)
 from .runner import runEnrollment
 
 fileLogger = logging.getLogger(LOGGER_NAME)
@@ -63,6 +68,20 @@ def buildParser() -> argparse.ArgumentParser:
     runParser.add_argument("--recheck", action="store_true",
                            help="Re-verify in-scope courses even if already marked complete "
                                 "(use with --ou-list to limit scope)")
+
+    orphanParser = subparsers.add_parser(
+        "find-orphans",
+        help="Report demo students whose course offering no longer exists (changes nothing)")
+    orphanParser.add_argument("--ou-list", metavar="ID,ID",
+                              help="Comma-separated org unit ids to scan instead of "
+                                   "the whole organization")
+    orphanParser.add_argument("--out", metavar="PATH",
+                              help="Write the orphan list to a CSV file as well")
+    orphanParser.add_argument("--max-candidate-ratio", type=float,
+                              default=DEFAULT_MAX_CANDIDATE_RATIO, metavar="RATIO",
+                              help="Abort if more than this share of completed courses "
+                                   f"look orphaned (default: {DEFAULT_MAX_CANDIDATE_RATIO}); "
+                                   "1.0 disables the check")
 
     statusParser = subparsers.add_parser(
         "status", help="Show recent runs and metrics from the database")
@@ -148,6 +167,74 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
     return 0 if summary.errorCount == 0 else 1
 
 
+def _parseOuList(rawOuList: str | None) -> list[int] | None:
+    """Comma-separated org unit ids from the command line, or None for all."""
+    if not rawOuList:
+        return None
+    return [int(orgUnitId) for orgUnitId in rawOuList.split(",") if orgUnitId.strip()]
+
+
+def _writeOrphanCsv(report: OrphanReport, outPath: Path) -> None:
+    """Write the orphan list to CSV so it can be reviewed before deleting."""
+    outPath.parent.mkdir(parents=True, exist_ok=True)
+    with outPath.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["orgUnitId", "userName", "userId", "courseName", "courseCode"])
+        for orphan in report.orphans:
+            writer.writerow([orphan.orgUnitId, orphan.userName, orphan.userId,
+                             orphan.courseName or "", orphan.courseCode or ""])
+
+
+def _printOrphanSummary(report: OrphanReport) -> None:
+    """Print what the scan found, including what it deliberately left alone."""
+    print("\nOrphan scan summary")
+    print(f"  Completed courses:    {report.completedCourseCount}")
+    print(f"  Candidates confirmed: {report.candidatesChecked}")
+    print(f"  Orphaned:             {len(report.orphans)}")
+    print(f"  Already gone:         {len(report.alreadyGone)}")
+    print(f"  Unconfirmable:        {len(report.unreachable)}")
+    if report.unreachable:
+        print(f"\n  {len(report.unreachable)} could not be confirmed and were left alone. "
+              f"A course the service account cannot see is not a deleted course; "
+              f"check the access requirements in README.md.")
+
+
+def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
+    """Report demo students whose course offering no longer exists.
+
+    Read-only: nothing in D2L or the database is changed. Use
+    delete-orphans to act on what this reports.
+    """
+    setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
+    db = MetricsDb(config.dbPath)
+    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    try:
+        report = findOrphanedDemoStudents(
+            api, config, db,
+            ouList=_parseOuList(args.ou_list),
+            maxCandidateRatio=args.max_candidate_ratio,
+        )
+    finally:
+        api.close()
+        db.close()
+
+    if not report.orphans:
+        print("\nNo orphaned demo students found.")
+    _printOrphanSummary(report)
+
+    if args.out:
+        outPath = Path(args.out)
+        _writeOrphanCsv(report, outPath)
+        print(f"\n  Report written to {outPath}")
+
+    fileLogger.info(
+        f"find-orphans: {len(report.orphans)} orphaned, "
+        f"{len(report.alreadyGone)} already gone, "
+        f"{len(report.unreachable)} unconfirmable, "
+        f"of {report.completedCourseCount} completed courses")
+    return 0
+
+
 def cmdStatus(config: AppConfig, showErrors: bool, limit: int) -> int:
     """Print recent runs or errors from the database."""
     db = MetricsDb(config.dbPath)
@@ -219,11 +306,17 @@ def main(argv: list[str] | None = None) -> int:
             return cmdWhoami(config)
         if args.command == "run":
             return cmdRun(config, args)
+        if args.command == "find-orphans":
+            return cmdFindOrphans(config, args)
         if args.command == "status":
             return cmdStatus(config, showErrors=args.errors, limit=args.limit)
         if args.command == "import-legacy":
             return cmdImportLegacy(config, args.file)
         raise AssertionError(f"Unhandled command: {args.command}")
+    except OrphanScanAborted as error:
+        print(f"Error: {error}", file=sys.stderr)
+        _logFatal(str(error))
+        return 2
     except (ConfigError, AuthError) as error:
         print(f"Error: {error}", file=sys.stderr)
         _logFatal(str(error))
