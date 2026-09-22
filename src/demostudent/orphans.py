@@ -82,6 +82,15 @@ class OrphanedDemoStudent:
 
 
 @dataclass(frozen=True)
+class CourseStateResult:
+    """How many courses each verdict applied to in one confirmation pass."""
+
+    live: int = 0
+    deleted: int = 0
+    unknown: int = 0
+
+
+@dataclass(frozen=True)
 class OrphanDeleteOutcome:
     """Result of retiring the orphans in a report."""
 
@@ -307,3 +316,60 @@ def deleteOrphanedDemoStudents(
             f"(user {orphan.userId}); course offering {orphan.orgUnitId} no longer exists")
 
     return OrphanDeleteOutcome(deleted=deleted, failed=failed, hardDeleted=hardDelete)
+
+
+def confirmCourseStates(
+    api: OrphanScanApi,
+    db: MetricsDb,
+    logFunc: Callable[[str], None] = print,
+) -> CourseStateResult:
+    """Look up each inventoried demo student's course and record what it finds.
+
+    One lookup per distinct org unit, not per demo student, since several
+    accounts can in principle name the same course.
+
+    Only an explicit 404 sets a course to 'deleted'. A 403 means the
+    service account cannot see the course, and anything else means the
+    lookup failed; both leave the state 'unknown', which no cleanup will
+    act on. That is the same fail-safe rule the rest of this module uses:
+    a course is presumed alive unless D2L says otherwise.
+    """
+    students = db.demoStudents()
+    orgUnitIds = sorted({
+        student["orgUnitId"] for student in students
+        if student["orgUnitId"] is not None
+    })
+
+    live = 0
+    deleted = 0
+    unknown = 0
+
+    for orgUnitId in orgUnitIds:
+        try:
+            api.getOrgUnit(orgUnitId)
+        except D2lApiError as error:
+            if error.httpStatus == 404:
+                db.setCourseState(orgUnitId, "deleted")
+                deleted += 1
+                logFunc(f"  {orgUnitId}: course deleted")
+                continue
+            db.setCourseState(orgUnitId, "unknown")
+            unknown += 1
+            logFunc(f"  {orgUnitId}: cannot confirm (HTTP {error.httpStatus})")
+            fileLogger.warning(
+                f"Course state unknown for org unit {orgUnitId}: "
+                f"HTTP {error.httpStatus}: {error}")
+            continue
+        except Exception as error:
+            db.setCourseState(orgUnitId, "unknown")
+            unknown += 1
+            logFunc(f"  {orgUnitId}: cannot confirm ({type(error).__name__})")
+            fileLogger.warning(
+                f"Course state unknown for org unit {orgUnitId}: "
+                f"{type(error).__name__}: {error}")
+            continue
+
+        db.setCourseState(orgUnitId, "live")
+        live += 1
+
+    return CourseStateResult(live=live, deleted=deleted, unknown=unknown)
