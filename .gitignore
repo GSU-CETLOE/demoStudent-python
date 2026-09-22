@@ -20,5 +20,6 @@ working/
 config.toml
 .env
 
-# Run reports
+# Run reports and orphan scan output
 *-report.csv
+orphans.csv
