@@ -449,9 +449,16 @@ cleanup skips those.
 
 #### Unverified: courses in the recycle bin
 
-**Test this against your instance before relying on the cleanup.**
-Deleting a course in the Brightspace UI does not remove the org unit. It
-goes to a recycle bin, where it can be restored or purged for good.
+**This tool never deletes a course.** It reads org units and nothing
+more. The only things it ever writes to D2L are demo student accounts:
+creating them, enrolling them, deactivating them, and deleting them
+under `--hard-delete`. Courses are deleted by people, in the Brightspace
+UI, and this tool only notices afterwards.
+
+**Test the following against your instance before relying on the
+cleanup.** When someone deletes a course in the Brightspace UI, the org
+unit is not removed. It goes to a recycle bin, where it can be restored
+or purged for good.
 D2L's API reference says `GET /lp/{v}/orgstructure/{ou}` returns 404 for
 an org unit that is not found, and never says which of those two states
 a recycled course counts as.
@@ -468,7 +475,8 @@ Either way nothing gets wrongly deleted, since a course that reads as
 alive is never judged orphaned. The worst case is that the command finds
 nothing.
 
-To check: delete a throwaway course that has a demo student, then run
+To check, you delete a course by hand: pick a throwaway course that has
+a demo student, delete it yourself in the Brightspace UI, then run
 `find-orphans --rescan`. If the demo student does not show up, the org
 unit lookup is returning 200 for recycled courses, and detection would
 need to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.

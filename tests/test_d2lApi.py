@@ -408,3 +408,29 @@ def test_iterUsersStopsOnMissingBookmark(api):
     )
     assert [user["UserId"] for user in api.iterUsers()] == [9001]
     assert route.call_count == 1
+
+
+def test_theToolNeverWritesToAnOrgUnit():
+    """Courses are read, never modified. This tool must not delete a course.
+
+    Guards the boundary rather than a behavior: every route that touches
+    an org unit is a GET, and the only destructive call in the client
+    targets a user. A change that added a course deletion, whether on
+    purpose or by mistake, fails here.
+    """
+    import inspect
+    import re
+
+    from demostudent import d2lApi
+
+    source = inspect.getsource(d2lApi)
+    writes = re.findall(r'_request\(\s*"(POST|PUT|DELETE|PATCH)",\s*\n?\s*f?"([^"]+)"',
+                        source)
+    # Every write must target a user or an enrollment, never an org unit.
+    for method, path in writes:
+        assert "orgstructure" not in path, (
+            f"{method} {path} writes to an org unit; this tool only reads courses")
+        assert "recyclebin" not in path, (
+            f"{method} {path} touches the course recycle bin")
+
+    assert not re.search(r'_request\(\s*"DELETE"[^)]*orgstructure', source)

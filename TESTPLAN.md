@@ -75,11 +75,15 @@ manual testing.
 
 ## find-orphans
 
-Read-only against D2L throughout.
+Read-only against D2L throughout. Note that several steps below ask you
+to delete a course in the Brightspace UI. That is you setting up a test
+case by hand. **The tool itself never deletes a course**, and has no
+code path that could: every org unit route it calls is a read.
 
-- [ ] **Verify the recycle bin behavior first.** Delete a throwaway course
-      offering that has a demo student, then run
-      `uv run demo-student find-orphans --rescan`. If the demo student is
+- [ ] **Verify the recycle bin behavior first.** *You* delete the course
+      here, by hand in the Brightspace UI; the tool never deletes courses.
+      Pick a throwaway course offering that has a demo student, delete it
+      yourself, then run `uv run demo-student find-orphans --rescan`. If the demo student is
       reported, the org unit lookup returns 404 for recycled courses and
       detection works. If it is not reported, the lookup returns 200 and
       detection only finds courses purged from the recycle bin. Note that
@@ -125,8 +129,8 @@ Read-only against D2L throughout.
       and names the permission rather than reporting zero orphans
 - [ ] `uv run demo-student find-orphans` with nothing deleted reports
       "No orphaned demo students found"
-- [ ] After deleting a course that has a demo student,
-      `find-orphans --rescan` reports that `demo.{ou}` user
+- [ ] After you delete a course that has a demo student (by hand, in the
+      Brightspace UI), `find-orphans --rescan` reports that `demo.{ou}` user
 - [ ] The demo student still exists and is still active in the D2L UI
       afterwards (the command changed nothing)
 - [ ] A second `find-orphans` without `--rescan` reuses the cached
