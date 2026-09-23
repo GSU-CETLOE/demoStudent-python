@@ -1,9 +1,9 @@
-"""Tests for orphaned demo student detection.
+"""Tests for retiring orphaned demo students.
 
-An orphaned demo student is one whose course offering no longer exists in
-D2L. Detection must never mistake a course the service account cannot see
-for a deleted one, so these tests pin down the 403 and error behavior as
-firmly as the 404 behavior.
+Detection lives in test_demoStudentScan.py. These cover what happens
+afterwards: deactivating or deleting the accounts, keeping the inventory
+honest about which ones were retired, and making sure a failure leaves
+the account on the books instead of losing it.
 """
 
 import pytest
@@ -11,8 +11,7 @@ import pytest
 from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiError
 from demostudent.db import MetricsDb
-from demostudent.orphans import (OrphanScanAborted, deleteOrphanedDemoStudents,
-                                 findOrphanedDemoStudents)
+from demostudent.orphans import deleteOrphanedDemoStudents, findOrphansFromInventory
 
 
 @pytest.fixture
@@ -64,147 +63,6 @@ class FakeApi:
         return {"UserId": 9000 + int(userName.split(".")[1]), "UserName": userName}
 
 
-def markCompleted(db, orgUnitIds, runId=1):
-    for orgUnitId in orgUnitIds:
-        db.markCourseCompleted(
-            orgUnitId=orgUnitId, courseName=f"Course {orgUnitId}",
-            courseCode=f"C{orgUnitId}", userName=f"demo.{orgUnitId}",
-            userId=9000 + orgUnitId, runId=runId,
-        )
-
-
-def test_deletedCourseIsReportedAsOrphaned(config, db):
-    markCompleted(db, [300, 301, 302])
-    api = FakeApi(liveCourseIds=[300, 301], deletedCourseIds={302})
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert [orphan.orgUnitId for orphan in report.orphans] == [302]
-    assert report.orphans[0].userName == "demo.302"
-    assert report.candidatesChecked == 1
-
-
-def test_liveCourseIsNeverOrphaned(config, db):
-    markCompleted(db, [300, 301])
-    api = FakeApi(liveCourseIds=[300, 301])
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert api.orgUnitLookups == []  # nothing to confirm; discovery saw them both
-
-
-def test_courseMissingFromDiscoveryButStillAliveIsNotOrphaned(config, db):
-    """Discovery can omit a course the account cannot reach; a 200 clears it."""
-    markCompleted(db, [300, 301])
-    api = FakeApi(liveCourseIds=[300])  # 301 absent from discovery but not deleted
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert api.orgUnitLookups == [301]  # it was confirmed rather than assumed
-    assert report.candidatesChecked == 1
-
-
-def test_forbiddenCourseIsSkippedNotDeleted(config, db):
-    """A 403 means the account cannot see the course, not that it is gone."""
-    markCompleted(db, [300, 301])
-    api = FakeApi(liveCourseIds=[300], forbiddenCourseIds={301})
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert report.unreachable == [301]
-
-
-def test_unexpectedApiErrorIsSkippedNotDeleted(config, db):
-    """A 500 is not proof of anything; the course is left alone."""
-    class FlakyApi(FakeApi):
-        def getOrgUnit(self, orgUnitId):
-            self.orgUnitLookups.append(orgUnitId)
-            raise D2lApiError("Server error", httpStatus=500)
-
-    markCompleted(db, [300, 301])
-    api = FlakyApi(liveCourseIds=[300])
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert report.unreachable == [301]
-
-
-def test_orphanCarriesTheStoredUserDetails(config, db):
-    markCompleted(db, [302])
-    api = FakeApi(liveCourseIds=[], deletedCourseIds={302})
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    orphan = report.orphans[0]
-    assert orphan.orgUnitId == 302
-    assert orphan.userName == "demo.302"
-    assert orphan.userId == 9302
-    assert orphan.courseName == "Course 302"
-    assert orphan.courseCode == "C302"
-
-
-def test_legacyRowWithoutUserDetailsIsResolvedFromD2l(config, db):
-    """import-legacy rows carry only an org unit id; the user is looked up live."""
-    db.importCompletedOrgUnits([302])
-    api = FakeApi(liveCourseIds=[], deletedCourseIds={302})
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    orphan = report.orphans[0]
-    assert orphan.userName == "demo.302"
-    assert orphan.userId == 9302
-
-
-def test_legacyRowWhoseUserNoLongerExistsIsNotAnOrphan(config, db):
-    """Nothing to delete if the demo student is already gone from D2L."""
-    class NoUserApi(FakeApi):
-        def getUserByUsername(self, userName):
-            return None
-
-    db.importCompletedOrgUnits([302])
-    api = NoUserApi(liveCourseIds=[], deletedCourseIds={302})
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert report.alreadyGone == [302]
-
-
-def test_scanAbortsWhenCandidatesExceedTheCap(config, db):
-    """A permissions gap looks like mass deletion; refuse rather than report it."""
-    markCompleted(db, range(300, 400))
-    api = FakeApi(liveCourseIds=[300])  # 99 of 100 missing from discovery
-
-    with pytest.raises(OrphanScanAborted) as excInfo:
-        findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert "99" in str(excInfo.value)
-    assert api.orgUnitLookups == []  # aborted before any confirmation call
-
-
-def test_capCanBeOverridden(config, db):
-    markCompleted(db, range(300, 400))
-    api = FakeApi(liveCourseIds=[300], deletedCourseIds=set(range(301, 400)))
-
-    report = findOrphanedDemoStudents(api, config, db, maxCandidateRatio=1.0,
-                                      logFunc=lambda _line: None)
-
-    assert len(report.orphans) == 99
-
-
-def test_emptyCompletedCoursesScansNothing(config, db):
-    api = FakeApi(liveCourseIds=[300, 301])
-
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.orphans == []
-    assert report.candidatesChecked == 0
-
-
 class DeletingFakeApi(FakeApi):
     """FakeApi that also records deletions and deactivations."""
 
@@ -226,155 +84,110 @@ class DeletingFakeApi(FakeApi):
         self.deactivatedUserIds.append(userId)
 
 
-def test_deleteRemovesTheOrphanedUser(config, db):
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
-                                         logFunc=lambda _line: None)
-
-    assert api.deletedUserIds == [9302]
-    assert outcome.deleted == 1
-    assert outcome.failed == 0
-
-
-def test_deleteClearsTheStaleCompletedCourseRow(config, db):
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
-                               logFunc=lambda _line: None)
-
-    assert db.completedOrgUnitIds() == {300}
-
-
-def test_deleteFailureLeavesTheDatabaseRowInPlace(config, db):
-    """A user that could not be deleted must stay on the books for a retry."""
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
-                          failingUserIds={9302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
-                                         logFunc=lambda _line: None)
-
-    assert outcome.deleted == 0
-    assert outcome.failed == 1
-    assert db.completedOrgUnitIds() == {300, 302}  # row kept for the retry
-
-
-def test_deleteContinuesPastAFailure(config, db):
-    markCompleted(db, [300, 302, 303])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302, 303},
-                          failingUserIds={9302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
-                                         logFunc=lambda _line: None)
-
-    assert outcome.deleted == 1
-    assert outcome.failed == 1
-    assert api.deletedUserIds == [9303]
-    assert db.completedOrgUnitIds() == {300, 302}  # 303 cleared, 302 kept
-
-
-def test_deleteWithNoOrphansDoesNothing(config, db):
-    markCompleted(db, [300])
-    api = DeletingFakeApi(liveCourseIds=[300])
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=True,
-                                         logFunc=lambda _line: None)
-
-    assert outcome.deleted == 0
-    assert api.deletedUserIds == []
-
-
-def test_deleteRecordsFailuresAsErrors(config, db):
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
-                          failingUserIds={9302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    deleteOrphanedDemoStudents(api, db, report, runId=7, hardDelete=True,
-                               logFunc=lambda _line: None)
-
-    errors = db.recentErrors(limit=5)
-    assert len(errors) == 1
-    assert errors[0]["phase"] == "deleteOrphan"
-    assert errors[0]["orgUnitId"] == 302
-    assert errors[0]["httpStatus"] == 403
+def orphanedInventory(db, orgUnitIds):
+    """Seed the inventory with demo students whose courses are gone."""
+    db.recordDemoStudents([
+        {"userId": 9000 + orgUnitId, "userName": f"demo.{orgUnitId}",
+         "orgUnitId": orgUnitId, "isActive": True}
+        for orgUnitId in orgUnitIds
+    ])
+    for orgUnitId in orgUnitIds:
+        db.setCourseState(orgUnitId, "deleted")
+    return findOrphansFromInventory(db)
 
 
 def test_defaultDeactivatesRatherThanDeletes(config, db):
     """Deletion is effectively irreversible, so it is never the default."""
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[])
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, orphans, logFunc=lambda _line: None)
 
     assert api.deactivatedUserIds == [9302]
     assert api.deletedUserIds == []
     assert outcome.deleted == 1
 
 
-def test_deactivationClearsTheStaleRowToo(config, db):
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+def test_hardDeleteRemovesTheUser(config, db):
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[])
 
-    deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    outcome = deleteOrphanedDemoStudents(api, db, orphans, hardDelete=True,
+                                         logFunc=lambda _line: None)
 
-    assert db.completedOrgUnitIds() == {300}
+    assert api.deletedUserIds == [9302]
+    assert api.deactivatedUserIds == []
+    assert outcome.deleted == 1
 
 
-def test_failedDeactivationKeepsTheRow(config, db):
-    markCompleted(db, [300, 302])
-    api = DeletingFakeApi(liveCourseIds=[300], deletedCourseIds={302},
-                          failingUserIds={9302})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+def test_hardDeleteForgetsTheInventoryRow(config, db):
+    """The account no longer exists in D2L, so tracking it serves nothing."""
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[])
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, logFunc=lambda _line: None)
+    deleteOrphanedDemoStudents(api, db, orphans, hardDelete=True,
+                               logFunc=lambda _line: None)
 
+    assert db.demoStudents() == []
+
+
+def test_deactivationKeepsTheRowButMarksItInactive(config, db):
+    """It still exists in D2L, so keep it, but stop offering it every run."""
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[])
+
+    deleteOrphanedDemoStudents(api, db, orphans, logFunc=lambda _line: None)
+
+    students = db.demoStudents()
+    assert len(students) == 1
+    assert students[0]["isActive"] == 0
+    assert findOrphansFromInventory(db) == []
+
+
+def test_failureLeavesTheOrphanOnTheBooks(config, db):
+    """A user that could not be retired must come back on the next run."""
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[], failingUserIds={9302})
+
+    outcome = deleteOrphanedDemoStudents(api, db, orphans, logFunc=lambda _line: None)
+
+    assert outcome.deleted == 0
     assert outcome.failed == 1
-    assert db.completedOrgUnitIds() == {300, 302}
+    assert len(findOrphansFromInventory(db)) == 1
 
 
-def test_nonApiErrorDuringConfirmationIsSkippedNotDeleted(config, db):
-    """A timeout is not proof of deletion, and must not abort the scan."""
-    class TimingOutApi(FakeApi):
-        def getOrgUnit(self, orgUnitId):
-            self.orgUnitLookups.append(orgUnitId)
-            if orgUnitId == 301:
-                raise TimeoutError("connection timed out")
-            return super().getOrgUnit(orgUnitId)
+def test_deleteContinuesPastAFailure(config, db):
+    orphans = orphanedInventory(db, [302, 303])
+    api = DeletingFakeApi(liveCourseIds=[], failingUserIds={9302})
 
-    markCompleted(db, [300, 301, 302])
-    api = TimingOutApi(liveCourseIds=[300], deletedCourseIds={302})
+    outcome = deleteOrphanedDemoStudents(api, db, orphans, logFunc=lambda _line: None)
 
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
-
-    assert report.unreachable == [301]
-    # the scan carried on and still found the genuinely deleted course
-    assert [orphan.orgUnitId for orphan in report.orphans] == [302]
+    assert outcome.deleted == 1
+    assert outcome.failed == 1
+    assert api.deactivatedUserIds == [9303]
+    assert [orphan.orgUnitId for orphan in findOrphansFromInventory(db)] == [302]
 
 
-def test_userLookupFailureDuringConfirmationIsSkipped(config, db):
-    """The user lookup for a legacy row can fail too; that is not an orphan."""
-    class FailingUserLookupApi(FakeApi):
-        def getUserByUsername(self, userName):
-            raise D2lApiError("Not Authorized", httpStatus=403)
+def test_deleteWithNoOrphansDoesNothing(config, db):
+    api = DeletingFakeApi(liveCourseIds=[])
 
-    db.importCompletedOrgUnits([302])
-    api = FailingUserLookupApi(liveCourseIds=[], deletedCourseIds={302})
+    outcome = deleteOrphanedDemoStudents(api, db, [], logFunc=lambda _line: None)
 
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+    assert outcome.deleted == 0
+    assert api.deactivatedUserIds == []
 
-    assert report.orphans == []
-    assert report.unreachable == [302]
+
+def test_deleteRecordsFailuresAsErrors(config, db):
+    orphans = orphanedInventory(db, [302])
+    api = DeletingFakeApi(liveCourseIds=[], failingUserIds={9302})
+
+    deleteOrphanedDemoStudents(api, db, orphans, runId=7, logFunc=lambda _line: None)
+
+    errors = db.recentErrors(limit=5)
+    assert len(errors) == 1
+    assert errors[0]["phase"] == "deleteOrphan"
+    assert errors[0]["orgUnitId"] == 302
+    assert errors[0]["httpStatus"] == 403
 
 
 def test_nonApiErrorDuringCleanupIsRecordedAndOthersContinue(config, db):
@@ -385,16 +198,14 @@ def test_nonApiErrorDuringCleanupIsRecordedAndOthersContinue(config, db):
                 raise TimeoutError("connection timed out")
             return super().setUserActivation(userId, isActive)
 
-    markCompleted(db, [300, 302, 303])
-    api = TimingOutApi(liveCourseIds=[300], deletedCourseIds={302, 303})
-    report = findOrphanedDemoStudents(api, config, db, logFunc=lambda _line: None)
+    orphans = orphanedInventory(db, [302, 303])
+    api = TimingOutApi(liveCourseIds=[])
 
-    outcome = deleteOrphanedDemoStudents(api, db, report, runId=9,
+    outcome = deleteOrphanedDemoStudents(api, db, orphans, runId=9,
                                          logFunc=lambda _line: None)
 
     assert outcome.failed == 1
     assert outcome.deleted == 1
     assert api.deactivatedUserIds == [9303]
-    assert db.completedOrgUnitIds() == {300, 302}  # the failed one keeps its row
     errors = db.recentErrors(limit=5)
     assert "TimeoutError" in errors[0]["message"]

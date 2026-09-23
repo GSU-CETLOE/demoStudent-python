@@ -5,20 +5,23 @@ no longer exists in D2L. Those accounts have nothing left to do, but
 removing the wrong one is not recoverable, so every step here is built
 to fail toward doing nothing.
 
-Candidates come from diffing the completedCourses table against live
-discovery, which costs one discovery pass instead of a call per course.
-The diff by itself is not evidence. Brightspace leaves org units the
-service account cannot reach out of listings (see "Course Access
-Options" in README.md), so a permissions gap would make thousands of
-live courses look deleted. Each candidate is confirmed with its own org
-unit lookup, and only an explicit 404 counts. A 403 means the account
-cannot see the course, which is a different thing; any other error means
-nothing at all. Both get reported and left alone.
+Detection runs in two passes. scanDemoStudents walks D2L's user list and
+records every demo.{orgUnitId} account into the inventory;
+confirmCourseStates then looks up each distinct course once and records
+whether it is live, deleted, or unconfirmable.
 
-There is a second guard for the case the first one misses. A scan whose
-candidate set is too large a share of all completed courses gives up
-before confirming anything, since a sudden mass orphaning is usually a
-broken service account rather than real deletions.
+Reading the accounts from D2L rather than from the completedCourses
+table is the whole point. That table is a skip list pruned on a
+one-year clock, so a course deleted after its row aged out leaves
+nothing behind, and the oldest demo students are exactly the ones most
+likely to have lost their course. A demo student's username carries the
+org unit id it belongs to, which makes the inventory self-describing and
+independent of what the database happens to remember.
+
+Only an explicit 404 on the course lookup marks a course deleted. A 403
+means the service account cannot see the course, which is a different
+thing, and any other error means the lookup failed. Both leave the state
+unknown, and nothing acts on unknown.
 
 Cleanup deactivates rather than deletes. D2L reverses a user deletion
 only through a support request, only within 30 days, and only while no
@@ -35,20 +38,9 @@ from typing import Any, Callable, Iterator, Protocol
 from .config import AppConfig
 from .d2lApi import D2lApiError
 from .db import MetricsDb
-from .discovery import discoverCourseOfferings
 from .logs import LOGGER_NAME
 
 fileLogger = logging.getLogger(LOGGER_NAME)
-
-# Give up on a scan when more than this share of completed courses look
-# orphaned. That pattern is usually a broken service account rather than
-# real deletions.
-DEFAULT_MAX_CANDIDATE_RATIO = 0.05
-
-# The ratio on its own is too strict on small course sets, where a few
-# real deletions are a large percentage. Candidate sets this size or
-# smaller always get confirmed one by one, which is cheap anyway.
-MIN_CANDIDATES_BEFORE_ABORT = 25
 
 
 class DemoStudentScanApi(Protocol):
@@ -70,10 +62,6 @@ class OrphanDeleteApi(Protocol):
 
     def deleteUser(self, userId: int) -> None: ...
     def setUserActivation(self, userId: int, isActive: bool) -> None: ...
-
-
-class OrphanScanAborted(Exception):
-    """The candidate set was too large to trust, so nothing was confirmed."""
 
 
 class DemoStudentScanAborted(Exception):
@@ -124,17 +112,6 @@ class OrphanDeleteOutcome:
         return "deleted" if self.hardDeleted else "deactivated"
 
 
-@dataclass(frozen=True)
-class OrphanReport:
-    """Everything one scan found, including what it deliberately left alone."""
-
-    orphans: list[OrphanedDemoStudent] = field(default_factory=list)
-    unreachable: list[int] = field(default_factory=list)
-    alreadyGone: list[int] = field(default_factory=list)
-    completedCourseCount: int = 0
-    candidatesChecked: int = 0
-
-
 def parseDemoStudentUsername(userName: str, config: AppConfig) -> int | None:
     """The org unit id encoded in a demo student username, or None.
 
@@ -161,181 +138,6 @@ def parseDemoStudentUsername(userName: str, config: AppConfig) -> int | None:
     if not orgUnitPart.isdigit():
         return None
     return int(orgUnitPart)
-
-
-def _resolveDemoStudent(
-    api: OrphanScanApi,
-    config: AppConfig,
-    row: dict[str, Any],
-) -> tuple[str, int | None]:
-    """The demo student for a completed course row.
-
-    Rows written by a run carry the username and user id. Rows seeded by
-    import-legacy carry only an org unit id, so the user is looked up
-    live from its derived username.
-    """
-    userName = row["userName"] or config.demoUsername(row["orgUnitId"])
-    userId = row["userId"]
-    if userId is None:
-        user = api.getUserByUsername(userName)
-        userId = user["UserId"] if user else None
-    return userName, userId
-
-
-def findOrphanedDemoStudents(
-    api: OrphanScanApi,
-    config: AppConfig,
-    db: MetricsDb,
-    ouList: list[int] | None = None,
-    maxCandidateRatio: float = DEFAULT_MAX_CANDIDATE_RATIO,
-    logFunc: Callable[[str], None] = print,
-) -> OrphanReport:
-    """Find demo students whose course offering no longer exists.
-
-    Reports only; nothing in D2L or the database is changed. Raises
-    OrphanScanAborted when the candidate set is both larger than
-    MIN_CANDIDATES_BEFORE_ABORT and above maxCandidateRatio of all
-    completed courses, which signals a permissions problem rather than
-    real deletions. Pass maxCandidateRatio=1.0 to scan anyway.
-    """
-    completedRows = db.completedCourses()
-    if not completedRows:
-        logFunc("No completed courses recorded; nothing to scan.")
-        return OrphanReport()
-
-    liveCourses = discoverCourseOfferings(api, config, ouList=ouList)
-    liveOrgUnitIds = {course.orgUnitId for course in liveCourses}
-    candidates = [row for row in completedRows if row["orgUnitId"] not in liveOrgUnitIds]
-
-    logFunc(f"{len(completedRows)} completed courses recorded; {len(liveCourses)} found live; "
-            f"{len(candidates)} to confirm.")
-
-    overRatio = len(candidates) > len(completedRows) * maxCandidateRatio
-    if len(candidates) > MIN_CANDIDATES_BEFORE_ABORT and overRatio:
-        message = (
-            f"Aborting: {len(candidates)} of {len(completedRows)} completed courses are "
-            f"missing from discovery, above the {maxCandidateRatio:.0%} threshold. "
-            f"Brightspace hides courses the service account cannot reach, so this is far "
-            f"more likely a permissions problem than real deletions. Check Course Access "
-            f"Options and role permissions (see README.md), then re-run with "
-            f"--max-candidate-ratio to override."
-        )
-        fileLogger.error(message)
-        raise OrphanScanAborted(message)
-
-    orphans: list[OrphanedDemoStudent] = []
-    unreachable: list[int] = []
-    alreadyGone: list[int] = []
-
-    for row in candidates:
-        orgUnitId = row["orgUnitId"]
-
-        def skipUnconfirmable(reason: str) -> None:
-            """Leave a course alone because its state could not be established.
-
-            Anything short of an explicit 404 lands here.
-            """
-            unreachable.append(orgUnitId)
-            logFunc(f"  {orgUnitId}: skipped - cannot confirm ({reason})")
-            fileLogger.warning(
-                f"Orphan scan could not confirm org unit {orgUnitId}: {reason}")
-
-        try:
-            api.getOrgUnit(orgUnitId)
-        except D2lApiError as error:
-            if error.httpStatus != 404:
-                skipUnconfirmable(f"HTTP {error.httpStatus}: {error}")
-                continue
-        except Exception as error:
-            # A timeout or malformed response proves nothing either way.
-            skipUnconfirmable(f"{type(error).__name__}: {error}")
-            continue
-        else:
-            continue  # 200: the course is alive, so nothing is orphaned here
-
-        # Only a 404 reaches this point: the course offering is gone.
-        try:
-            userName, userId = _resolveDemoStudent(api, config, row)
-        except Exception as error:
-            skipUnconfirmable(f"user lookup failed - {type(error).__name__}: {error}")
-            continue
-
-        if userId is None:
-            alreadyGone.append(orgUnitId)
-            logFunc(f"  {orgUnitId}: course deleted, demo student already gone")
-            continue
-
-        orphans.append(OrphanedDemoStudent(
-            orgUnitId=orgUnitId, userName=userName, userId=userId,
-            courseName=row["courseName"], courseCode=row["courseCode"],
-        ))
-        logFunc(f"  {orgUnitId}: ORPHANED - {userName} (course deleted)")
-
-    return OrphanReport(
-        orphans=orphans, unreachable=unreachable, alreadyGone=alreadyGone,
-        completedCourseCount=len(completedRows), candidatesChecked=len(candidates),
-    )
-
-
-def deleteOrphanedDemoStudents(
-    api: OrphanDeleteApi,
-    db: MetricsDb,
-    report: OrphanReport,
-    runId: int | None = None,
-    hardDelete: bool = False,
-    logFunc: Callable[[str], None] = print,
-) -> OrphanDeleteOutcome:
-    """Retire the demo students in a report and clear their database rows.
-
-    Deactivates by default, which blocks the account, keeps its
-    enrollments, and can be undone whenever. Pass hardDelete=True to
-    delete instead. D2L reverses a deletion only through a support
-    request, only within 30 days, and only while no new account has taken
-    the same username, and this tool reuses demo.{orgUnitId} on every
-    run.
-
-    Works only from orphans findOrphanedDemoStudents already confirmed;
-    nothing is judged deleted here. A user that fails keeps its
-    completedCourses row and stays on the books for a retry, with the
-    failure recorded in the errors table. Every exception is caught, not
-    just D2lApiError, so one bad user cannot abandon the rest.
-    """
-    deleted = 0
-    failed = 0
-    actionName = "delete" if hardDelete else "deactivate"
-    pastTense = "Deleted" if hardDelete else "Deactivated"
-
-    for orphan in report.orphans:
-        try:
-            if hardDelete:
-                api.deleteUser(orphan.userId)
-            else:
-                api.setUserActivation(orphan.userId, isActive=False)
-        except Exception as error:
-            failed += 1
-            if isinstance(error, D2lApiError):
-                httpStatus = error.httpStatus
-                detail = str(error)
-            else:
-                httpStatus = None
-                detail = f"{type(error).__name__}: {error}"
-            message = (f"Could not {actionName} {orphan.userName} "
-                       f"(user {orphan.userId}): {detail}")
-            logFunc(f"  ERROR {orphan.orgUnitId}: {message}")
-            fileLogger.error(message)
-            db.recordError(runId, orgUnitId=orphan.orgUnitId, phase="deleteOrphan",
-                           httpStatus=httpStatus, message=message)
-            continue
-
-        deleted += 1
-        db.clearCompleted([orphan.orgUnitId])
-        logFunc(f"  {pastTense.lower()} {orphan.userName} "
-                f"(course {orphan.orgUnitId} no longer exists)")
-        fileLogger.info(
-            f"{pastTense} orphaned demo student {orphan.userName} "
-            f"(user {orphan.userId}); course offering {orphan.orgUnitId} no longer exists")
-
-    return OrphanDeleteOutcome(deleted=deleted, failed=failed, hardDeleted=hardDelete)
 
 
 def confirmCourseStates(
@@ -514,3 +316,76 @@ def findOrphansFromInventory(
             courseCode=None,
         ))
     return orphans
+
+
+def deleteOrphanedDemoStudents(
+    api: OrphanDeleteApi,
+    db: MetricsDb,
+    orphans: list[OrphanedDemoStudent],
+    runId: int | None = None,
+    hardDelete: bool = False,
+    logFunc: Callable[[str], None] = print,
+) -> OrphanDeleteOutcome:
+    """Retire the demo students in a list and update the inventory.
+
+    Deactivates by default, which blocks the account, keeps its
+    enrollments, and can be undone whenever. Pass hardDelete=True to
+    delete instead. D2L reverses a deletion only through a support
+    request, only within 30 days, and only while no new account has taken
+    the same username, and this tool reuses demo.{orgUnitId} on every
+    run.
+
+    Works only from orphans whose course was already confirmed deleted;
+    nothing is judged here. A user that fails keeps its inventory row and
+    its recorded course state, so the next run offers it again, with the
+    failure recorded in the errors table. Every exception is caught, not
+    just D2lApiError, so one bad user cannot abandon the rest.
+    """
+    deleted = 0
+    failed = 0
+    actionName = "delete" if hardDelete else "deactivate"
+    pastTense = "Deleted" if hardDelete else "Deactivated"
+
+    for orphan in orphans:
+        try:
+            if hardDelete:
+                api.deleteUser(orphan.userId)
+            else:
+                api.setUserActivation(orphan.userId, isActive=False)
+        except Exception as error:
+            failed += 1
+            if isinstance(error, D2lApiError):
+                httpStatus = error.httpStatus
+                detail = str(error)
+            else:
+                httpStatus = None
+                detail = f"{type(error).__name__}: {error}"
+            message = (f"Could not {actionName} {orphan.userName} "
+                       f"(user {orphan.userId}): {detail}")
+            logFunc(f"  ERROR {orphan.orgUnitId}: {message}")
+            fileLogger.error(message)
+            db.recordError(runId, orgUnitId=orphan.orgUnitId, phase="deleteOrphan",
+                           httpStatus=httpStatus, message=message)
+            continue
+
+        deleted += 1
+        db.clearCompleted([orphan.orgUnitId])
+        if hardDelete:
+            # The account is gone from D2L, so the inventory row would
+            # only be re-scanned into nothing.
+            db.forgetDemoStudent(orphan.userId)
+        else:
+            # Still in D2L, just inactive. Record that so the next run
+            # does not offer it again.
+            db.recordDemoStudents([{
+                "userId": orphan.userId, "userName": orphan.userName,
+                "orgUnitId": orphan.orgUnitId, "isActive": False,
+            }])
+            db.setCourseState(orphan.orgUnitId, "deleted")
+        logFunc(f"  {pastTense.lower()} {orphan.userName} "
+                f"(course {orphan.orgUnitId} no longer exists)")
+        fileLogger.info(
+            f"{pastTense} orphaned demo student {orphan.userName} "
+            f"(user {orphan.userId}); course offering {orphan.orgUnitId} no longer exists")
+
+    return OrphanDeleteOutcome(deleted=deleted, failed=failed, hardDeleted=hardDelete)

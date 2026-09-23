@@ -311,108 +311,140 @@ def mockOrgUnit(orgUnitId, status=200):
         status, json={"Errors": [{"Message": "Resource Not Found"}]}))
 
 
-@respx.mock
-def test_findOrphansReportsDeletedCourses(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302, 303])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
+def mockUserWalk(users):
+    """GET /users/ returning one page of User.UserData entries."""
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
+            "Items": [
+                {"UserId": userId, "UserName": userName,
+                 "Activation": {"IsActive": True}}
+                for userId, userName in users
+            ],
+        })
+    )
 
-    # 303's course offering has been deleted in D2L since the run
-    mockDiscovery([301, 302])
-    mockOrgUnit(303, status=404)
+
+@respx.mock
+def test_findOrphansWalksUsersWhenInventoryIsEmpty(configPath, storedTokens, capsys):
+    """No cache yet, so the first run must build one rather than report nothing."""
+    mockUserWalk([(9301, "demo.301"), (9302, "demo.302"), (1, "jsmith")])
+    mockOrgUnit(301, status=200)
+    mockOrgUnit(302, status=404)
 
     exitCode = main(["--config", str(configPath), "find-orphans"])
     assert exitCode == 0
     out = capsys.readouterr().out
-    assert "303" in out
-    assert "demo.303" in out
+    assert "demo.302" in out
     assert "Orphaned:             1" in out
 
 
 @respx.mock
-def test_findOrphansChangesNothing(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
+def test_findOrphansFindsOrphanWithNoCompletedCourseRow(configPath, storedTokens,
+                                                        capsys, tmp_path):
+    """The bug this rework fixes: a pruned course row must not hide an orphan."""
+    import sqlite3
+
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=404)
+
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+
+    dbPath = tmp_path / "working" / "db" / "demoStudent.db"
+    connection = sqlite3.connect(dbPath)
+    completed = connection.execute("SELECT COUNT(*) FROM completedCourses").fetchone()[0]
+    connection.close()
+    assert completed == 0  # nothing in the skip list, yet the orphan was found
+    assert "demo.302" in capsys.readouterr().out
+
+
+@respx.mock
+def test_findOrphansReusesTheInventoryWithoutRescan(configPath, storedTokens, capsys):
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=404)
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
     capsys.readouterr()
 
-    mockDiscovery([301])
-    mockOrgUnit(302, status=404)
-    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    walkRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    walkRoute.reset()
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert not walkRoute.called  # the cached inventory was used
 
+
+@respx.mock
+def test_findOrphansRescanWalksAgain(configPath, storedTokens, capsys):
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=404)
     assert main(["--config", str(configPath), "find-orphans"]) == 0
-    assert not deleteRoute.called
-    # the completedCourses row is left in place by a report-only scan
-    assert main(["--config", str(configPath), "find-orphans"]) == 0
-    assert "Orphaned:             1" in capsys.readouterr().out
+    capsys.readouterr()
+
+    exitCode = main(["--config", str(configPath), "find-orphans", "--rescan"])
+    assert exitCode == 0
+    assert "Users walked" in capsys.readouterr().out
+
+
+@respx.mock
+def test_findOrphansAbortsWhenUsernamesAreHidden(configPath, storedTokens, capsys):
+    """An under-permissioned role would otherwise report a clean empty tenant."""
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
+            "Items": [{"UserId": 9301, "Activation": {"IsActive": True}}],
+        })
+    )
+
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 2
+    assert "See Usernames" in capsys.readouterr().err
 
 
 @respx.mock
 def test_findOrphansWithNothingOrphanedSaysSo(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
+    mockUserWalk([(9301, "demo.301")])
+    mockOrgUnit(301, status=200)
 
-    mockDiscovery([301, 302])
-    exitCode = main(["--config", str(configPath), "find-orphans"])
-    assert exitCode == 0
-    assert "No orphaned demo students" in capsys.readouterr().out
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert "No orphaned demo students found" in capsys.readouterr().out
 
 
 @respx.mock
 def test_findOrphansSkipsCoursesItCannotSee(configPath, storedTokens, capsys):
-    """A 403 is not proof of deletion; it must be reported, never deleted."""
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    """A 403 is not proof of deletion; it must never produce an orphan."""
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=403)
 
-    exitCode = main(["--config", str(configPath), "find-orphans"])
-    assert exitCode == 0
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
     out = capsys.readouterr().out
-    assert "No orphaned demo students" in out
-    assert "1 could not be confirmed" in out
+    assert "No orphaned demo students found" in out
+    assert "Courses unconfirmed:  1" in out
 
 
 @respx.mock
 def test_findOrphansWritesCsvReport(configPath, storedTokens, tmp_path, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
     reportPath = tmp_path / "orphans.csv"
 
-    exitCode = main(["--config", str(configPath), "find-orphans",
-                     "--out", str(reportPath)])
-    assert exitCode == 0
+    assert main(["--config", str(configPath), "find-orphans",
+                 "--out", str(reportPath)]) == 0
     content = reportPath.read_text()
-    assert "orgUnitId,userName,userId,courseName,courseCode" in content
-    assert "302,demo.302" in content
+    assert "orgUnitId,userName,userId" in content
+    assert "302,demo.302,9302" in content
 
 
 @respx.mock
 def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
-    """Without --confirm the command reports and changes nothing."""
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    activationRoute = respx.put(
+        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation")
 
-    exitCode = main(["--config", str(configPath), "delete-orphans"])
-    assert exitCode == 0
-    assert not deleteRoute.called
+    assert main(["--config", str(configPath), "delete-orphans"]) == 0
+    assert not activationRoute.called
     out = capsys.readouterr().out
     assert "--confirm" in out
     assert "demo.302" in out
@@ -420,21 +452,14 @@ def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
 
 @respx.mock
 def test_deleteOrphansWithConfirmDeactivatesByDefault(configPath, storedTokens, capsys):
-    """Deletion is effectively irreversible, so --confirm alone deactivates."""
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
     deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
     activationRoute = respx.put(
         url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(200))
 
-    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
-    assert exitCode == 0
+    assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     assert activationRoute.called
     assert not deleteRoute.called
     assert json.loads(activationRoute.calls.last.request.content) == {"IsActive": False}
@@ -443,89 +468,53 @@ def test_deleteOrphansWithConfirmDeactivatesByDefault(configPath, storedTokens, 
 
 @respx.mock
 def test_deleteOrphansHardDeleteRemovesTheUser(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
     deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
         return_value=httpx.Response(200))
 
-    exitCode = main(["--config", str(configPath), "delete-orphans",
-                     "--confirm", "--hard-delete"])
-    assert exitCode == 0
+    assert main(["--config", str(configPath), "delete-orphans",
+                 "--confirm", "--hard-delete"]) == 0
     assert deleteRoute.called
     out = capsys.readouterr().out
     assert "Deleted:              1" in out
-    assert "support request" in out  # the irreversibility is stated before acting
+    assert "support request" in out  # irreversibility stated before acting
 
 
 @respx.mock
-def test_deleteOrphansWithoutConfirmNamesTheDefaultAction(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+def test_deactivatedOrphanIsNotOfferedAgain(configPath, storedTokens, capsys):
+    """Once retired, an account should stop appearing in every later run."""
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-
-    assert main(["--config", str(configPath), "delete-orphans"]) == 0
-    assert "deactivate these 1" in capsys.readouterr().out
-
-
-@respx.mock
-def test_deleteOrphansClearsStaleRow(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
     respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(200))
-    mockDiscovery([301])
-    mockOrgUnit(302, status=404)
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     capsys.readouterr()
 
-    # The stale row is gone, so a second scan finds nothing to do
     assert main(["--config", str(configPath), "find-orphans"]) == 0
-    assert "No orphaned demo students" in capsys.readouterr().out
+    assert "No orphaned demo students found" in capsys.readouterr().out
 
 
 @respx.mock
-def test_deleteOrphansNeverDeletesAnUnconfirmableCourse(configPath, storedTokens, capsys):
-    """A 403 on the course lookup must not lead to a deletion."""
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+def test_deleteOrphansNeverActsOnAnUnconfirmableCourse(configPath, storedTokens, capsys):
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=403)
     deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
     activationRoute = respx.put(
         url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation")
 
-    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
-    assert exitCode == 0
+    assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     assert not deleteRoute.called
     assert not activationRoute.called
-    assert "1 could not be confirmed" in capsys.readouterr().out
+    assert "Courses unconfirmed:  1" in capsys.readouterr().out
 
 
 @respx.mock
 def test_deleteOrphansReportsFailureAndExitsOne(configPath, storedTokens, capsys):
-    mockDiscovery([301, 302])
-    mockCourseWork()
-    assert main(["--config", str(configPath), "run"]) == 0
-    capsys.readouterr()
-
-    mockDiscovery([301])
+    mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
     respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
 
-    exitCode = main(["--config", str(configPath), "delete-orphans", "--confirm"])
-    assert exitCode == 1
+    assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 1
     assert "Failed:               1" in capsys.readouterr().out

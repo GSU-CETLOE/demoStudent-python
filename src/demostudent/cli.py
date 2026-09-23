@@ -29,8 +29,9 @@ from .config import AppConfig, ConfigError, loadConfig
 from .d2lApi import D2lApiClient, D2lApiError
 from .db import MetricsDb
 from .logs import LOGGER_NAME, setupFileLogging
-from .orphans import (DEFAULT_MAX_CANDIDATE_RATIO, OrphanReport, OrphanScanAborted,
-                      deleteOrphanedDemoStudents, findOrphanedDemoStudents)
+from .orphans import (DemoStudentScanAborted, OrphanedDemoStudent,
+                      confirmCourseStates, deleteOrphanedDemoStudents,
+                      findOrphansFromInventory, scanDemoStudents)
 from .runner import runEnrollment
 
 fileLogger = logging.getLogger(LOGGER_NAME)
@@ -76,16 +77,11 @@ def buildParser() -> argparse.ArgumentParser:
     orphanParser = subparsers.add_parser(
         "find-orphans",
         help="Report demo students whose course offering no longer exists (changes nothing)")
-    orphanParser.add_argument("--ou-list", metavar="ID,ID",
-                              help="Comma-separated org unit ids to scan instead of "
-                                   "the whole organization")
+    orphanParser.add_argument("--rescan", action="store_true",
+                              help="Re-walk D2L's user list before reporting, instead of "
+                                   "using the cached inventory")
     orphanParser.add_argument("--out", metavar="PATH",
                               help="Write the orphan list to a CSV file as well")
-    orphanParser.add_argument("--max-candidate-ratio", type=float,
-                              default=DEFAULT_MAX_CANDIDATE_RATIO, metavar="RATIO",
-                              help="Abort if more than this share of completed courses "
-                                   f"look orphaned (default: {DEFAULT_MAX_CANDIDATE_RATIO}); "
-                                   "1.0 disables the check")
 
     deleteOrphanParser = subparsers.add_parser(
         "delete-orphans",
@@ -97,16 +93,11 @@ def buildParser() -> argparse.ArgumentParser:
                                     help="Permanently delete instead of deactivating. D2L "
                                          "reverses this only by support request, within 30 "
                                          "days, and only while the username is unused")
-    deleteOrphanParser.add_argument("--ou-list", metavar="ID,ID",
-                                    help="Comma-separated org unit ids to scan instead of "
-                                         "the whole organization")
+    deleteOrphanParser.add_argument("--rescan", action="store_true",
+                                    help="Re-walk D2L's user list before acting, instead of "
+                                         "using the cached inventory")
     deleteOrphanParser.add_argument("--out", metavar="PATH",
                                     help="Write the orphan list to a CSV file as well")
-    deleteOrphanParser.add_argument("--max-candidate-ratio", type=float,
-                                    default=DEFAULT_MAX_CANDIDATE_RATIO, metavar="RATIO",
-                                    help="Abort if more than this share of completed courses "
-                                         f"look orphaned (default: "
-                                         f"{DEFAULT_MAX_CANDIDATE_RATIO}); 1.0 disables the check")
 
     statusParser = subparsers.add_parser(
         "status", help="Show recent runs and metrics from the database")
@@ -192,71 +183,77 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
     return 0 if summary.errorCount == 0 else 1
 
 
-def _parseOuList(rawOuList: str | None) -> list[int] | None:
-    """Comma-separated org unit ids from the command line, or None for all."""
-    if not rawOuList:
-        return None
-    return [int(orgUnitId) for orgUnitId in rawOuList.split(",") if orgUnitId.strip()]
-
-
-def _writeOrphanCsv(report: OrphanReport, outPath: Path) -> None:
+def _writeOrphanCsv(orphans: list[OrphanedDemoStudent], outPath: Path) -> None:
     """Write the orphan list to CSV so it can be reviewed before deleting."""
     outPath.parent.mkdir(parents=True, exist_ok=True)
     with outPath.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["orgUnitId", "userName", "userId", "courseName", "courseCode"])
-        for orphan in report.orphans:
-            writer.writerow([orphan.orgUnitId, orphan.userName, orphan.userId,
-                             orphan.courseName or "", orphan.courseCode or ""])
+        writer.writerow(["orgUnitId", "userName", "userId"])
+        for orphan in orphans:
+            writer.writerow([orphan.orgUnitId, orphan.userName, orphan.userId])
 
 
-def _printOrphanSummary(report: OrphanReport) -> None:
-    """Print what the scan found, including what it deliberately left alone."""
-    print("\nOrphan scan summary")
-    print(f"  Completed courses:    {report.completedCourseCount}")
-    print(f"  Candidates confirmed: {report.candidatesChecked}")
-    print(f"  Orphaned:             {len(report.orphans)}")
-    print(f"  Already gone:         {len(report.alreadyGone)}")
-    print(f"  Unconfirmable:        {len(report.unreachable)}")
-    if report.unreachable:
-        print(f"\n  {len(report.unreachable)} could not be confirmed and were left alone. "
-              f"A course the service account cannot see is not a deleted course; "
+def _buildInventory(
+    api,
+    config: AppConfig,
+    db: MetricsDb,
+    rescan: bool,
+) -> list[OrphanedDemoStudent]:
+    """Refresh the demo student inventory if needed, then confirm course states.
+
+    The walk over D2L's user list is the expensive part, so it runs only
+    when the inventory is empty or --rescan asks for it. Course states
+    are re-confirmed every time, since a course can be deleted long after
+    the account was first seen.
+    """
+    if rescan or not db.demoStudents():
+        scanResult = scanDemoStudents(api, config, db)
+        print(f"  Users walked:         {scanResult.usersWalked}")
+        print(f"  Demo students found:  {scanResult.demoStudentsFound}")
+    else:
+        print(f"Using the cached inventory of {len(db.demoStudents())} demo students "
+              f"(--rescan to refresh it).")
+
+    stateResult = confirmCourseStates(api, db)
+    print(f"  Courses live:         {stateResult.live}")
+    print(f"  Courses deleted:      {stateResult.deleted}")
+    print(f"  Courses unconfirmed:  {stateResult.unknown}")
+    if stateResult.unknown:
+        print(f"\n  {stateResult.unknown} courses could not be confirmed and were left "
+              f"alone. A course the service account cannot see is not a deleted course; "
               f"check the access requirements in README.md.")
+    return findOrphansFromInventory(db)
 
 
 def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     """Report demo students whose course offering no longer exists.
 
-    Read-only: nothing in D2L or the database is changed. Use
-    delete-orphans to act on what this reports.
+    Read-only against D2L. The inventory and course states it records
+    locally are a cache of what D2L reports, not a change to it.
     """
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     db = MetricsDb(config.dbPath)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
-        report = findOrphanedDemoStudents(
-            api, config, db,
-            ouList=_parseOuList(args.ou_list),
-            maxCandidateRatio=args.max_candidate_ratio,
-        )
+        orphans = _buildInventory(api, config, db, rescan=args.rescan)
     finally:
         api.close()
         db.close()
 
-    if not report.orphans:
+    print(f"  Orphaned:             {len(orphans)}")
+    if not orphans:
         print("\nNo orphaned demo students found.")
-    _printOrphanSummary(report)
+    else:
+        print("")
+        for orphan in orphans:
+            print(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
 
     if args.out:
         outPath = Path(args.out)
-        _writeOrphanCsv(report, outPath)
+        _writeOrphanCsv(orphans, outPath)
         print(f"\n  Report written to {outPath}")
 
-    fileLogger.info(
-        f"find-orphans: {len(report.orphans)} orphaned, "
-        f"{len(report.alreadyGone)} already gone, "
-        f"{len(report.unreachable)} unconfirmable, "
-        f"of {report.completedCourseCount} completed courses")
+    fileLogger.info(f"find-orphans: {len(orphans)} orphaned demo students")
     return 0
 
 
@@ -271,47 +268,42 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     db = MetricsDb(config.dbPath)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
-        report = findOrphanedDemoStudents(
-            api, config, db,
-            ouList=_parseOuList(args.ou_list),
-            maxCandidateRatio=args.max_candidate_ratio,
-        )
+        orphans = _buildInventory(api, config, db, rescan=args.rescan)
+        print(f"  Orphaned:             {len(orphans)}")
 
         if args.out:
-            _writeOrphanCsv(report, Path(args.out))
+            _writeOrphanCsv(orphans, Path(args.out))
 
-        if not report.orphans:
-            print("\nNo orphaned demo students found; nothing to delete.")
-            _printOrphanSummary(report)
+        if not orphans:
+            print("\nNo orphaned demo students found; nothing to do.")
             return 0
 
         verb = "delete" if args.hard_delete else "deactivate"
+        print("")
+        for orphan in orphans:
+            print(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+
         if not args.confirm:
-            _printOrphanSummary(report)
             print(f"\n  Nothing was changed. Re-run with --confirm to {verb} these "
-                  f"{len(report.orphans)} demo students.")
+                  f"{len(orphans)} demo students.")
             return 0
 
         if args.hard_delete:
             print("\n  Hard delete: D2L reverses this only by support request, within 30 "
                   "days, and only while no new account has taken the same username.")
 
-        print(f"\n{verb.capitalize()[:-1]}ing {len(report.orphans)} orphaned demo students...")
-        fileLogger.info(f"delete-orphans: about to {verb} {len(report.orphans)} "
+        print(f"\n{verb.capitalize()[:-1]}ing {len(orphans)} orphaned demo students...")
+        fileLogger.info(f"delete-orphans: about to {verb} {len(orphans)} "
                         f"orphaned demo students")
-        outcome = deleteOrphanedDemoStudents(api, db, report, hardDelete=args.hard_delete)
+        outcome = deleteOrphanedDemoStudents(api, db, orphans, hardDelete=args.hard_delete)
     finally:
         api.close()
         db.close()
 
     print("\nCleanup summary")
-    print(f"  Completed courses:    {report.completedCourseCount}")
-    print(f"  Candidates confirmed: {report.candidatesChecked}")
-    print(f"  Orphaned:             {len(report.orphans)}")
     actionLabel = f"{outcome.actionName.capitalize()}:"
     print(f"  {actionLabel:<21} {outcome.deleted}")
     print(f"  Failed:               {outcome.failed}")
-    print(f"  Unconfirmable:        {len(report.unreachable)}")
     if args.out:
         print(f"\n  Report written to {args.out}")
     fileLogger.info(f"delete-orphans finished: {outcome.deleted} {outcome.actionName}, "
@@ -399,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "import-legacy":
             return cmdImportLegacy(config, args.file)
         raise AssertionError(f"Unhandled command: {args.command}")
-    except OrphanScanAborted as error:
+    except DemoStudentScanAborted as error:
         print(f"Error: {error}", file=sys.stderr)
         _logFatal(str(error))
         return 2
