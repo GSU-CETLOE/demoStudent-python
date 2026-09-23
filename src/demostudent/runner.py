@@ -21,6 +21,7 @@ from .db import MetricsDb
 from .discovery import CourseOffering, discoverCourseOfferings
 from .enrollment import ensureDemoStudent
 from .logs import LOGGER_NAME
+from .output import emit
 
 fileLogger = logging.getLogger(LOGGER_NAME)
 
@@ -67,7 +68,7 @@ def runEnrollment(
     maxWorkers: int | None = None,
     dryRun: bool = False,
     recheck: bool = False,
-    logFunc: Callable[[str], None] = print,
+    logFunc: Callable[[str], None] = emit,
 ) -> RunSummary:
     """Execute one full pass and persist metrics; returns the summary."""
     pruned = db.pruneOldActivity()

@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from .config import AppConfig
+from .output import emit
 
 try:  # POSIX
     import fcntl
@@ -415,7 +416,7 @@ def obtainTokensInteractively(config: AppConfig, manual: bool = False) -> TokenS
     """Run the appropriate interactive flow and persist the resulting tokens."""
     if manual or findMkcert() is None:
         if not manual:
-            print("mkcert not found; falling back to the manual flow.")
+            emit("mkcert not found; falling back to the manual flow.")
         tokens = runManualFlow(config)
     else:
         tokens = runBrowserFlow(config)

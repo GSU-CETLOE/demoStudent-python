@@ -29,6 +29,7 @@ from typing import Any, Callable, Protocol
 from .config import AppConfig
 from .db import MetricsDb
 from .logs import LOGGER_NAME
+from .output import emit
 
 fileLogger = logging.getLogger(LOGGER_NAME)
 
@@ -190,7 +191,7 @@ def scanDemoStudentsFromDataSets(
     api: DataSetsApi,
     config: AppConfig,
     db: MetricsDb,
-    logFunc: Callable[[str], None] = print,
+    logFunc: Callable[[str], None] = emit,
 ) -> DataSetScanResult | None:
     """Record demo students from the newest Users extract into the inventory.
 

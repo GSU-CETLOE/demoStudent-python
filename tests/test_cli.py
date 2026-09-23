@@ -345,7 +345,7 @@ def test_findOrphansWalksUsersWhenInventoryIsEmpty(configPath, storedTokens, cap
     assert exitCode == 0
     out = capsys.readouterr().out
     assert "demo.302" in out
-    assert "Orphaned:             1" in out
+    assert "1 orphaned demo student" in out
 
 
 @respx.mock
@@ -591,7 +591,7 @@ def test_dataSetsScanRequiresTheDemoStudentRole(configPath, storedTokens, capsys
     assert main(["--config", str(configPath), "find-orphans"]) == 0
     out = capsys.readouterr().out
     assert "demo.302" in out
-    assert "demo.12345" not in out.split("Orphaned:")[-1]
+    assert "demo.12345" not in out.split("orphaned demo students")[-1]
 
 
 @respx.mock

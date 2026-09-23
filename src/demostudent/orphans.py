@@ -39,19 +39,11 @@ from .config import AppConfig
 from .d2lApi import D2lApiError
 from .db import MetricsDb
 from .logs import LOGGER_NAME
+from .output import emit
 
 fileLogger = logging.getLogger(LOGGER_NAME)
 
 
-def emit(line: str) -> None:
-    """Print a progress line and flush it.
-
-    Python block-buffers stdout when it is not a terminal, so a run whose
-    output is piped or redirected to a log file would show nothing for
-    minutes and then everything at once. These lines exist to prove the
-    command is alive, which they cannot do sitting in a buffer.
-    """
-    print(line, flush=True)
 
 
 class DemoStudentScanApi(Protocol):

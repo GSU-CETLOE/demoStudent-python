@@ -32,7 +32,8 @@ from .logs import LOGGER_NAME, setupFileLogging
 from .dataSets import scanDemoStudentsFromDataSets
 from .orphans import (DemoStudentScanAborted, OrphanedDemoStudent,
                       confirmCourseStates, deleteOrphanedDemoStudents,
-                      emit, findOrphansFromInventory, scanDemoStudents)
+                      findOrphansFromInventory, scanDemoStudents)
+from .output import emit, emitBlock, emitError, plural
 from .runner import runEnrollment
 
 fileLogger = logging.getLogger(LOGGER_NAME)
@@ -137,8 +138,8 @@ def cmdAuth(config: AppConfig, manual: bool) -> int:
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     obtainTokensInteractively(config, manual=manual)
     identityName = _identityName(_fetchIdentity(config))
-    print(f"Authenticated to {config.host} as {identityName}")
-    print(f"Tokens stored in {config.tokenPath}")
+    emit(f"Authenticated to {config.host} as {identityName}")
+    emit(f"Tokens stored in {config.tokenPath}")
     fileLogger.info(f"Authenticated to {config.host} as {identityName}")
     return 0
 
@@ -146,11 +147,13 @@ def cmdAuth(config: AppConfig, manual: bool) -> int:
 def cmdWhoami(config: AppConfig) -> int:
     """Print the D2L account the stored tokens make API calls as."""
     identity = _fetchIdentity(config)
-    print(f"  Host:       {config.host}")
-    print(f"  Name:       {_identityName(identity)}")
-    print(f"  Username:   {identity.get('UniqueName', '-')}")
-    print(f"  User id:    {identity.get('Identifier', '-')}")
-    print(f"  Token file: {config.tokenPath}")
+    emitBlock("Authenticated account", [
+        f"  Host:       {config.host}",
+        f"  Name:       {_identityName(identity)}",
+        f"  Username:   {identity.get('UniqueName', '-')}",
+        f"  User id:    {identity.get('Identifier', '-')}",
+        f"  Token file: {config.tokenPath}",
+    ])
     return 0
 
 
@@ -175,16 +178,18 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
         api.close()
         db.close()
 
-    print("\nRun summary")
-    print(f"  Status:               {summary.status}")
-    print(f"  Courses discovered:   {summary.coursesDiscovered}")
-    print(f"  Courses skipped:      {summary.coursesSkipped}")
-    print(f"  Courses checked:      {summary.coursesChecked}")
-    print(f"  Users created:        {summary.usersCreated}")
-    print(f"  Enrollments created:  {summary.enrollmentsCreated}")
-    print(f"  Errors:               {summary.errorCount}")
-    print(f"  Finished (UTC):       {summary.finishedAt}")
-    print(f"  Elapsed:              {summary.elapsed}")
+    emit()
+    emitBlock("Run summary", [
+        f"  Status:               {summary.status}",
+        f"  Courses discovered:   {summary.coursesDiscovered}",
+        f"  Courses skipped:      {summary.coursesSkipped}",
+        f"  Courses checked:      {summary.coursesChecked}",
+        f"  Users created:        {summary.usersCreated}",
+        f"  Enrollments created:  {summary.enrollmentsCreated}",
+        f"  Errors:               {summary.errorCount}",
+        f"  Finished (UTC):       {summary.finishedAt}",
+        f"  Elapsed:              {summary.elapsed}",
+    ])
     if summary.status == "interrupted":
         return 130
     return 0 if summary.errorCount == 0 else 1
@@ -216,17 +221,21 @@ def _refreshInventory(api, config: AppConfig, db: MetricsDb, useApiWalk: bool) -
     if not useApiWalk:
         dataSetResult = scanDemoStudentsFromDataSets(api, config, db)
         if dataSetResult is not None:
-            emit("")
-            emit(f"  Extract generated:    {dataSetResult.extractCreatedDate}")
-            emit(f"  Users read:           {dataSetResult.rowsRead}")
-            emit(f"  Demo students found:  {dataSetResult.demoStudentsFound}")
+            emit()
+            emitBlock("Inventory rebuilt from the Data Sets extract", [
+                f"  Extract generated:    {dataSetResult.extractCreatedDate}",
+                f"  Users read:           {dataSetResult.rowsRead}",
+                f"  Demo students found:  {dataSetResult.demoStudentsFound}",
+            ])
             return
         emit("Falling back to reading users from the live API.")
 
     scanResult = scanDemoStudents(api, config, db)
-    emit("")
-    emit(f"  Users walked:         {scanResult.usersWalked}")
-    emit(f"  Demo students found:  {scanResult.demoStudentsFound}")
+    emit()
+    emitBlock("Inventory rebuilt from the live user API", [
+        f"  Users walked:         {scanResult.usersWalked}",
+        f"  Demo students found:  {scanResult.demoStudentsFound}",
+    ])
 
 
 def _buildInventory(
@@ -252,14 +261,16 @@ def _buildInventory(
         emit(f"Using the cached inventory of {len(cached)} demo students "
              f"(--rescan to refresh it).")
 
-    emit("")
+    emit()
     stateResult = confirmCourseStates(api, db)
-    emit("")
-    emit(f"  Courses live:         {stateResult.live}")
-    emit(f"  Courses deleted:      {stateResult.deleted}")
-    emit(f"  Courses unconfirmed:  {stateResult.unknown}")
+    emit()
+    emitBlock("Course states", [
+        f"  Courses live:         {stateResult.live}",
+        f"  Courses deleted:      {stateResult.deleted}",
+        f"  Courses unconfirmed:  {stateResult.unknown}",
+    ])
     if stateResult.unknown:
-        emit(f"\n  {stateResult.unknown} courses could not be confirmed and were left "
+        emit(f"{stateResult.unknown} courses could not be confirmed and were left "
              f"alone. A course the service account cannot see is not a deleted course; "
              f"check the access requirements in README.md.")
     return findOrphansFromInventory(db)
@@ -281,18 +292,18 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
         api.close()
         db.close()
 
-    emit(f"  Orphaned:             {len(orphans)}")
     if not orphans:
-        emit("\nNo orphaned demo students found.")
+        emit("No orphaned demo students found.")
     else:
-        emit("")
-        for orphan in orphans:
-            emit(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+        emitBlock(f"{plural(len(orphans), 'orphaned demo student')}", [
+            f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)"
+            for orphan in orphans
+        ])
 
     if args.out:
         outPath = Path(args.out)
         _writeOrphanCsv(orphans, outPath)
-        emit(f"\n  Report written to {outPath}")
+        emit(f"Report written to {outPath}")
 
     fileLogger.info(f"find-orphans: {len(orphans)} orphaned demo students")
     return 0
@@ -311,30 +322,29 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     try:
         orphans = _buildInventory(api, config, db, rescan=args.rescan,
                                   useApiWalk=args.api_walk)
-        emit(f"  Orphaned:             {len(orphans)}")
-
         if args.out:
             _writeOrphanCsv(orphans, Path(args.out))
 
         if not orphans:
-            emit("\nNo orphaned demo students found; nothing to do.")
+            emit("No orphaned demo students found; nothing to do.")
             return 0
 
         verb = "delete" if args.hard_delete else "deactivate"
-        emit("")
-        for orphan in orphans:
-            emit(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+        emitBlock(f"{plural(len(orphans), 'orphaned demo student')}", [
+            f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)"
+            for orphan in orphans
+        ])
 
         if not args.confirm:
-            emit(f"\n  Nothing was changed. Re-run with --confirm to {verb} these "
-                  f"{len(orphans)} demo students.")
+            emit(f"Nothing was changed. Re-run with --confirm to {verb} these "
+                 f"{len(orphans)} demo students.")
             return 0
 
         if args.hard_delete:
-            emit("\n  Hard delete: D2L reverses this only by support request, within 30 "
-                  "days, and only while no new account has taken the same username.")
+            emit("Hard delete: D2L reverses this only by support request, within 30 "
+                 "days, and only while no new account has taken the same username.")
 
-        emit(f"\n{verb.capitalize()[:-1]}ing {len(orphans)} orphaned demo students...")
+        emit(f"{verb.capitalize()[:-1]}ing {len(orphans)} orphaned demo students...")
         fileLogger.info(f"delete-orphans: about to {verb} {len(orphans)} "
                         f"orphaned demo students")
         outcome = deleteOrphanedDemoStudents(api, db, orphans, hardDelete=args.hard_delete)
@@ -342,12 +352,14 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
         api.close()
         db.close()
 
-    emit("\nCleanup summary")
+    emit()
     actionLabel = f"{outcome.actionName.capitalize()}:"
-    emit(f"  {actionLabel:<21} {outcome.deleted}")
-    emit(f"  Failed:               {outcome.failed}")
+    emitBlock("Cleanup summary", [
+        f"  {actionLabel:<21} {outcome.deleted}",
+        f"  Failed:               {outcome.failed}",
+    ])
     if args.out:
-        emit(f"\n  Report written to {args.out}")
+        emit(f"Report written to {args.out}")
     fileLogger.info(f"delete-orphans finished: {outcome.deleted} {outcome.actionName}, "
                     f"{outcome.failed} failed")
     return 0 if outcome.failed == 0 else 1
@@ -360,27 +372,31 @@ def cmdStatus(config: AppConfig, showErrors: bool, limit: int) -> int:
         if showErrors:
             errors = db.recentErrors(limit=limit)
             if not errors:
-                print("No errors recorded.")
+                emit("No errors recorded.")
                 return 0
+            rows = []
             for error in errors:
                 orgUnit = error["orgUnitId"] if error["orgUnitId"] is not None else "-"
                 status = error["httpStatus"] if error["httpStatus"] is not None else "-"
-                print(f"[{error['occurredAt']}] run {error['runId']} "
-                      f"ou {orgUnit} {error['phase']} http {status}: {error['message']}")
+                rows.append(f"[{error['occurredAt']}] run {error['runId']} "
+                            f"ou {orgUnit} {error['phase']} http {status}: "
+                            f"{error['message']}")
+            emitBlock(plural(len(errors), "most recent error"), rows)
             return 0
 
         runs = db.recentRuns(limit=limit)
         if not runs:
-            print("No runs recorded yet.")
+            emit("No runs recorded yet.")
             return 0
         header = (f"{'run':>4}  {'started':<20} {'status':<20} {'found':>6} {'skip':>6} "
                   f"{'check':>6} {'users':>6} {'enroll':>6} {'errors':>6}")
-        print(header)
+        rows = [header]
         for run in runs:
-            print(f"{run['runId']:>4}  {run['startedAt']:<20} {run['status']:<20} "
-                  f"{run['coursesDiscovered']:>6} {run['coursesSkipped']:>6} "
-                  f"{run['coursesChecked']:>6} {run['usersCreated']:>6} "
-                  f"{run['enrollmentsCreated']:>6} {run['errorCount']:>6}")
+            rows.append(f"{run['runId']:>4}  {run['startedAt']:<20} {run['status']:<20} "
+                        f"{run['coursesDiscovered']:>6} {run['coursesSkipped']:>6} "
+                        f"{run['coursesChecked']:>6} {run['usersCreated']:>6} "
+                        f"{run['enrollmentsCreated']:>6} {run['errorCount']:>6}")
+        emitBlock(plural(len(runs), "most recent run"), rows)
         return 0
     finally:
         db.close()
@@ -408,7 +424,7 @@ def cmdImportLegacy(config: AppConfig, filePath: str) -> int:
         db.close()
     message = (f"Imported {added} new completed courses "
                f"({len(orgUnitIds)} ids in file, duplicates ignored).")
-    print(message)
+    emit(message)
     fileLogger.info(f"import-legacy {path}: {message}")
     return 0
 
@@ -434,19 +450,19 @@ def main(argv: list[str] | None = None) -> int:
             return cmdImportLegacy(config, args.file)
         raise AssertionError(f"Unhandled command: {args.command}")
     except DemoStudentScanAborted as error:
-        print(f"Error: {error}", file=sys.stderr)
+        emitError(f"Error: {error}")
         _logFatal(str(error))
         return 2
     except (ConfigError, AuthError) as error:
-        print(f"Error: {error}", file=sys.stderr)
+        emitError(f"Error: {error}")
         _logFatal(str(error))
         return 2
     except D2lApiError as error:
-        print(f"D2L API error: {error}", file=sys.stderr)
+        emitError(f"D2L API error: {error}")
         _logFatal(f"D2L API error: {error}")
         return 1
     except KeyboardInterrupt:
-        print("Interrupted.", file=sys.stderr)
+        emitError("Interrupted.")
         _logFatal("Interrupted by user.")
         return 130
 
