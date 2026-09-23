@@ -8,6 +8,7 @@ GET /d2l/api/versions/ so no API versions are hardcoded.
 
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import httpx
@@ -79,6 +80,7 @@ class D2lApiClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         allowNotFound: bool = False,
+        allowRedirect: bool = False,
     ) -> httpx.Response:
         """Issue a request with auth, 401 refresh-retry, and 429 backoff."""
         accessToken = self._tokenManager.getAccessToken()
@@ -102,6 +104,8 @@ class D2lApiClient:
                 self._sleepFunc(float(retryAfter) if retryAfter else DEFAULT_RETRY_AFTER_SECONDS)
                 continue
             if response.status_code == 404 and allowNotFound:
+                return response
+            if allowRedirect and response.status_code in (301, 302, 303, 307, 308):
                 return response
             if response.is_success:
                 return response
@@ -189,6 +193,102 @@ class D2lApiClient:
             if not nextBookmark or nextBookmark == bookmark:
                 return
             bookmark = nextBookmark
+
+    # --- Brightspace Data Sets ---
+
+    def _iterObjectListPages(self, url: str) -> Iterator[dict[str, Any]]:
+        """Walk an ObjectListPage, following its Next links.
+
+        Data Sets routes page differently from the rest of the API: each
+        response carries an absolute Next URL rather than a bookmark to
+        feed back as a parameter.
+        """
+        while url:
+            path = url[len(self._baseUrl):] if url.startswith(self._baseUrl) else url
+            page = self._request("GET", path).json()
+            yield from page.get("Objects", [])
+            url = page.get("Next") or ""
+
+    def findDataSet(self, name: str) -> dict[str, Any] | None:
+        """The schema and full-extract plugin ids for a named data set.
+
+        Returns None when Data Sets is unavailable. D2L answers 403
+        whether the tool is switched off for the tenant, the role lacks
+        Can Access Brightspace Data Sets, or the token lacks the
+        datasets:bds:read scope, and publishes nothing to tell those
+        apart. Callers treat any of them the same way: use another
+        source.
+
+        The name lives on the plugin rather than the data set, so this
+        matches on the full extract's Name.
+        """
+        try:
+            dataSets = self._iterObjectListPages(
+                f"{self._baseUrl}/d2l/api/lp/{self._lp()}/datasets/bds")
+            for dataSet in dataSets:
+                full = dataSet.get("Full")
+                if full and full.get("Name") == name:
+                    return {"schemaId": dataSet["SchemaId"],
+                            "pluginId": full["PluginId"],
+                            "name": full["Name"]}
+        except D2lApiError as error:
+            if error.httpStatus in (403, 404):
+                return None
+            raise
+        return None
+
+    def latestExtract(self, schemaId: str, pluginId: str) -> dict[str, Any] | None:
+        """The newest full extract for a data set plugin, or None.
+
+        D2L keeps a previous extract for up to 14 days after generating a
+        new one, so the listing routinely holds more than one and the
+        newest CreatedDate wins. Differentials are skipped: they record
+        changes since the last differential, which is useless without a
+        full import to apply them to.
+        """
+        extracts = [
+            extract for extract in self._iterObjectListPages(
+                f"{self._baseUrl}/d2l/api/lp/{self._lp()}/datasets/bds/"
+                f"{schemaId}/plugins/{pluginId}/extracts")
+            if extract.get("BdsType") == "Full"
+        ]
+        if not extracts:
+            return None
+        newest = max(extracts, key=lambda extract: extract["CreatedDate"])
+        return {"createdDate": newest["CreatedDate"],
+                "downloadLink": newest["DownloadLink"],
+                "downloadSize": newest.get("DownloadSize"),
+                "version": newest.get("Version")}
+
+    def downloadExtract(self, downloadLink: str, target: Path) -> Path:
+        """Download an extract to a local file, following D2L's redirect.
+
+        The download may answer 302 with a pre-authorized URL on separate
+        storage. The bearer token must not follow it there: that host is
+        not D2L, and the URL already carries its own authorization. The
+        redirect is handled here rather than by httpx so the header can
+        be dropped on the cross-host hop.
+        """
+        target.parent.mkdir(parents=True, exist_ok=True)
+        path = (downloadLink[len(self._baseUrl):]
+                if downloadLink.startswith(self._baseUrl) else downloadLink)
+
+        response = self._request("GET", path, allowRedirect=True)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers["Location"]
+            with self._http.stream("GET", location, follow_redirects=True) as streamed:
+                if not streamed.is_success:
+                    streamed.read()
+                    raise D2lApiError(
+                        f"Extract download failed with HTTP {streamed.status_code}",
+                        httpStatus=streamed.status_code)
+                with target.open("wb") as handle:
+                    for chunk in streamed.iter_bytes():
+                        handle.write(chunk)
+            return target
+
+        target.write_bytes(response.content)
+        return target
 
     def getEnrollment(self, orgUnitId: int, userId: int) -> dict[str, Any] | None:
         """A user's enrollment in an org unit; None when not enrolled.
