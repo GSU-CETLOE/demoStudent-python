@@ -428,7 +428,7 @@ def test_findOrphansSkipsCoursesItCannotSee(configPath, storedTokens, capsys):
     assert main(["--config", str(configPath), "find-orphans"]) == 0
     out = capsys.readouterr().out
     assert "No orphaned demo students found" in out
-    assert "Courses unconfirmed:  1" in out
+    assert "Could not confirm:    1" in out
 
 
 @respx.mock
@@ -514,7 +514,7 @@ def test_deleteOrphansNeverActsOnAnUnconfirmableCourse(configPath, storedTokens,
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     assert not deleteRoute.called
     assert not activationRoute.called
-    assert "Courses unconfirmed:  1" in capsys.readouterr().out
+    assert "Could not confirm:    1" in capsys.readouterr().out
 
 
 @respx.mock
@@ -610,3 +610,15 @@ def test_apiWalkFlagSkipsDataSets(configPath, storedTokens, capsys):
     assert main(["--config", str(configPath), "find-orphans", "--api-walk"]) == 0
     assert not dataSetRoute.called
     assert "Users walked" in capsys.readouterr().out
+
+
+@respx.mock
+def test_findOrphansSaysUpFrontThatItChangesNothing(configPath, storedTokens, capsys):
+    """A long read-only run should say so before the wait, not after."""
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=404)
+
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    firstLine = capsys.readouterr().out.splitlines()[0]
+    assert "report only" in firstLine.lower()
+    assert "is changed" in firstLine.lower()

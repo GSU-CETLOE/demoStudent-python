@@ -149,6 +149,10 @@ def confirmCourseStates(
 ) -> CourseStateResult:
     """Look up each inventoried demo student's course and record what it finds.
 
+    Read-only against D2L. The only call made here is an org unit lookup,
+    and the counts it returns describe what the courses already were, not
+    anything this function did to them.
+
     One lookup per distinct org unit rather than per demo student, since
     several accounts can name the same course.
 
@@ -167,10 +171,11 @@ def confirmCourseStates(
     if not orgUnitIds:
         return CourseStateResult()
 
-    logFunc(f"Checking {len(orgUnitIds)} courses, one lookup each.")
+    logFunc(f"Checking {len(orgUnitIds)} courses, one lookup each. "
+            f"Read-only; nothing is changed.")
 
     live = 0
-    deleted = 0
+    missing = 0
     unknown = 0
     checked = 0
 
@@ -178,14 +183,14 @@ def confirmCourseStates(
         checked += 1
         if checked % CONFIRM_PROGRESS_INTERVAL == 0:
             logFunc(f"  checked {checked} of {len(orgUnitIds)} courses, "
-                    f"{deleted} deleted so far")
+                    f"{missing} already missing from D2L")
         try:
             api.getOrgUnit(orgUnitId)
         except D2lApiError as error:
             if error.httpStatus == 404:
                 db.setCourseState(orgUnitId, "deleted")
-                deleted += 1
-                logFunc(f"  {orgUnitId}: course deleted")
+                missing += 1
+                logFunc(f"  {orgUnitId}: course no longer exists in D2L")
                 continue
             db.setCourseState(orgUnitId, "unknown")
             unknown += 1
@@ -206,7 +211,7 @@ def confirmCourseStates(
         db.setCourseState(orgUnitId, "live")
         live += 1
 
-    return CourseStateResult(live=live, deleted=deleted, unknown=unknown)
+    return CourseStateResult(live=live, deleted=missing, unknown=unknown)
 
 
 # Report progress every this many users. The walk is one long HTTP

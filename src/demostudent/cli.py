@@ -264,10 +264,10 @@ def _buildInventory(
     emit()
     stateResult = confirmCourseStates(api, db)
     emit()
-    emitBlock("Course states", [
-        f"  Courses live:         {stateResult.live}",
-        f"  Courses deleted:      {stateResult.deleted}",
-        f"  Courses unconfirmed:  {stateResult.unknown}",
+    emitBlock("Course states (read from D2L; nothing changed)", [
+        f"  Still in D2L:         {stateResult.live}",
+        f"  No longer in D2L:     {stateResult.deleted}",
+        f"  Could not confirm:    {stateResult.unknown}",
     ])
     if stateResult.unknown:
         emit(f"{stateResult.unknown} courses could not be confirmed and were left "
@@ -283,6 +283,7 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     locally are a cache of what D2L reports, not a change to it.
     """
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
+    emit("find-orphans: a report only. No account or course is changed.")
     db = MetricsDb(config.dbPath)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:

@@ -390,3 +390,41 @@ def test_progressIsFlushedSoItAppearsWhileRunning(config, db, capsys):
     )
     # Captured through a pipe: it arrived, which means it was flushed.
     assert "first line" in result.stdout
+
+
+def test_confirmProgressDoesNotClaimToDeleteAnything(config, db):
+    """'N deleted so far' reads as destruction; this pass only reads."""
+    from demostudent.orphans import confirmCourseStates
+
+    seedInventory(db, range(300, 560))
+    lines = []
+    confirmCourseStates(FakeApi(deletedCourseIds={305}), db, logFunc=lines.append)
+
+    progress = [line for line in lines if "checked" in line.lower()]
+    assert progress
+    for line in progress:
+        assert "deleted so far" not in line, (
+            f"progress line implies the command deleted something: {line!r}")
+
+
+def test_confirmProgressNamesWhatItFound(config, db):
+    """The count is of courses already gone, so say that."""
+    from demostudent.orphans import confirmCourseStates
+
+    seedInventory(db, range(300, 560))
+    lines = []
+    confirmCourseStates(FakeApi(deletedCourseIds={305}), db, logFunc=lines.append)
+
+    progress = [line for line in lines if "checked" in line.lower()]
+    assert any("missing" in line for line in progress), progress
+
+
+def test_confirmAnnouncementSaysItOnlyReads(config, db):
+    """Someone watching a long run should see that nothing is being changed."""
+    from demostudent.orphans import confirmCourseStates
+
+    seedInventory(db, [300])
+    lines = []
+    confirmCourseStates(FakeApi(), db, logFunc=lines.append)
+
+    assert "nothing is changed" in lines[0].lower() or "read" in lines[0].lower(), lines[0]
