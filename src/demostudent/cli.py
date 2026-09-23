@@ -31,7 +31,7 @@ from .db import MetricsDb
 from .logs import LOGGER_NAME, setupFileLogging
 from .orphans import (DemoStudentScanAborted, OrphanedDemoStudent,
                       confirmCourseStates, deleteOrphanedDemoStudents,
-                      findOrphansFromInventory, scanDemoStudents)
+                      emit, findOrphansFromInventory, scanDemoStudents)
 from .runner import runEnrollment
 
 fileLogger = logging.getLogger(LOGGER_NAME)
@@ -206,22 +206,28 @@ def _buildInventory(
     are re-confirmed every time, since a course can be deleted long after
     the account was first seen.
     """
-    if rescan or not db.demoStudents():
+    cached = db.demoStudents()
+    if rescan or not cached:
+        if not cached:
+            emit("No demo student inventory yet, so this run has to build one.")
         scanResult = scanDemoStudents(api, config, db)
-        print(f"  Users walked:         {scanResult.usersWalked}")
-        print(f"  Demo students found:  {scanResult.demoStudentsFound}")
+        emit("")
+        emit(f"  Users walked:         {scanResult.usersWalked}")
+        emit(f"  Demo students found:  {scanResult.demoStudentsFound}")
     else:
-        print(f"Using the cached inventory of {len(db.demoStudents())} demo students "
-              f"(--rescan to refresh it).")
+        emit(f"Using the cached inventory of {len(cached)} demo students "
+             f"(--rescan to refresh it).")
 
+    emit("")
     stateResult = confirmCourseStates(api, db)
-    print(f"  Courses live:         {stateResult.live}")
-    print(f"  Courses deleted:      {stateResult.deleted}")
-    print(f"  Courses unconfirmed:  {stateResult.unknown}")
+    emit("")
+    emit(f"  Courses live:         {stateResult.live}")
+    emit(f"  Courses deleted:      {stateResult.deleted}")
+    emit(f"  Courses unconfirmed:  {stateResult.unknown}")
     if stateResult.unknown:
-        print(f"\n  {stateResult.unknown} courses could not be confirmed and were left "
-              f"alone. A course the service account cannot see is not a deleted course; "
-              f"check the access requirements in README.md.")
+        emit(f"\n  {stateResult.unknown} courses could not be confirmed and were left "
+             f"alone. A course the service account cannot see is not a deleted course; "
+             f"check the access requirements in README.md.")
     return findOrphansFromInventory(db)
 
 
@@ -240,18 +246,18 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
         api.close()
         db.close()
 
-    print(f"  Orphaned:             {len(orphans)}")
+    emit(f"  Orphaned:             {len(orphans)}")
     if not orphans:
-        print("\nNo orphaned demo students found.")
+        emit("\nNo orphaned demo students found.")
     else:
-        print("")
+        emit("")
         for orphan in orphans:
-            print(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+            emit(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
 
     if args.out:
         outPath = Path(args.out)
         _writeOrphanCsv(orphans, outPath)
-        print(f"\n  Report written to {outPath}")
+        emit(f"\n  Report written to {outPath}")
 
     fileLogger.info(f"find-orphans: {len(orphans)} orphaned demo students")
     return 0
@@ -269,30 +275,30 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
         orphans = _buildInventory(api, config, db, rescan=args.rescan)
-        print(f"  Orphaned:             {len(orphans)}")
+        emit(f"  Orphaned:             {len(orphans)}")
 
         if args.out:
             _writeOrphanCsv(orphans, Path(args.out))
 
         if not orphans:
-            print("\nNo orphaned demo students found; nothing to do.")
+            emit("\nNo orphaned demo students found; nothing to do.")
             return 0
 
         verb = "delete" if args.hard_delete else "deactivate"
-        print("")
+        emit("")
         for orphan in orphans:
-            print(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
+            emit(f"  {orphan.userName} (course {orphan.orgUnitId} no longer exists)")
 
         if not args.confirm:
-            print(f"\n  Nothing was changed. Re-run with --confirm to {verb} these "
+            emit(f"\n  Nothing was changed. Re-run with --confirm to {verb} these "
                   f"{len(orphans)} demo students.")
             return 0
 
         if args.hard_delete:
-            print("\n  Hard delete: D2L reverses this only by support request, within 30 "
+            emit("\n  Hard delete: D2L reverses this only by support request, within 30 "
                   "days, and only while no new account has taken the same username.")
 
-        print(f"\n{verb.capitalize()[:-1]}ing {len(orphans)} orphaned demo students...")
+        emit(f"\n{verb.capitalize()[:-1]}ing {len(orphans)} orphaned demo students...")
         fileLogger.info(f"delete-orphans: about to {verb} {len(orphans)} "
                         f"orphaned demo students")
         outcome = deleteOrphanedDemoStudents(api, db, orphans, hardDelete=args.hard_delete)
@@ -300,12 +306,12 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
         api.close()
         db.close()
 
-    print("\nCleanup summary")
+    emit("\nCleanup summary")
     actionLabel = f"{outcome.actionName.capitalize()}:"
-    print(f"  {actionLabel:<21} {outcome.deleted}")
-    print(f"  Failed:               {outcome.failed}")
+    emit(f"  {actionLabel:<21} {outcome.deleted}")
+    emit(f"  Failed:               {outcome.failed}")
     if args.out:
-        print(f"\n  Report written to {args.out}")
+        emit(f"\n  Report written to {args.out}")
     fileLogger.info(f"delete-orphans finished: {outcome.deleted} {outcome.actionName}, "
                     f"{outcome.failed} failed")
     return 0 if outcome.failed == 0 else 1

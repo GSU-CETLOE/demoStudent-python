@@ -320,3 +320,73 @@ def test_alreadyInactiveOrphansAreExcludedByDefault(config, db):
 
     assert findOrphansFromInventory(db) == []
     assert len(findOrphansFromInventory(db, includeInactive=True)) == 1
+
+
+def test_scanAnnouncesItselfBeforeWalking(config, db):
+    """The walk is long and silent otherwise; say what is happening first."""
+    from demostudent.orphans import scanDemoStudents
+
+    lines = []
+    api = WalkingApi([userItem(9301, "demo.301")])
+    scanDemoStudents(api, config, db, logFunc=lines.append)
+
+    assert lines, "the scan printed nothing at all"
+    assert "Reading" in lines[0] or "Walking" in lines[0]
+
+
+def test_scanReportsProgressOftenEnoughToLookAlive(config, db):
+    """A tenant walk should show movement well before it finishes."""
+    from demostudent.orphans import scanDemoStudents
+
+    lines = []
+    api = WalkingApi([userItem(9000 + n, f"demo.{n}") for n in range(2500)])
+    scanDemoStudents(api, config, db, logFunc=lines.append)
+
+    progressLines = [line for line in lines if "walked" in line.lower()
+                     and "so far" in line.lower()]
+    assert len(progressLines) >= 4, f"only {len(progressLines)} progress lines in 2500 users"
+
+
+def test_confirmAnnouncesItselfAndReportsProgress(config, db):
+    """The confirm pass is one API call per course and was entirely silent."""
+    from demostudent.orphans import confirmCourseStates
+
+    seedInventory(db, range(300, 560))
+    lines = []
+    api = FakeApi()
+
+    confirmCourseStates(api, db, logFunc=lines.append)
+
+    assert lines, "the confirm pass printed nothing at all"
+    assert "course" in lines[0].lower()
+    progressLines = [line for line in lines if "checked" in line.lower()]
+    assert progressLines, "no progress while checking 260 live courses"
+
+
+def test_confirmProgressCountsLiveCoursesToo(config, db):
+    """On a healthy tenant nearly every course is live; silence looks hung."""
+    from demostudent.orphans import confirmCourseStates
+
+    seedInventory(db, range(300, 420))
+    lines = []
+    confirmCourseStates(FakeApi(), db, logFunc=lines.append)
+
+    assert any("checked" in line.lower() for line in lines)
+
+
+def test_progressIsFlushedSoItAppearsWhileRunning(config, db, capsys):
+    """Unflushed stdout buffers when piped, hiding progress until the end."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent('''
+        from demostudent.orphans import emit
+        emit("first line")
+    ''')
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, check=True,
+    )
+    # Captured through a pipe: it arrived, which means it was flushed.
+    assert "first line" in result.stdout

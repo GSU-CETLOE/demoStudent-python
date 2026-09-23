@@ -43,6 +43,17 @@ from .logs import LOGGER_NAME
 fileLogger = logging.getLogger(LOGGER_NAME)
 
 
+def emit(line: str) -> None:
+    """Print a progress line and flush it.
+
+    Python block-buffers stdout when it is not a terminal, so a run whose
+    output is piped or redirected to a log file would show nothing for
+    minutes and then everything at once. These lines exist to prove the
+    command is alive, which they cannot do sitting in a buffer.
+    """
+    print(line, flush=True)
+
+
 class DemoStudentScanApi(Protocol):
     """The slice of D2lApiClient that the inventory scan needs."""
 
@@ -142,7 +153,7 @@ def parseDemoStudentUsername(userName: str, config: AppConfig) -> int | None:
 def confirmCourseStates(
     api: OrphanScanApi,
     db: MetricsDb,
-    logFunc: Callable[[str], None] = print,
+    logFunc: Callable[[str], None] = emit,
 ) -> CourseStateResult:
     """Look up each inventoried demo student's course and record what it finds.
 
@@ -161,11 +172,21 @@ def confirmCourseStates(
         if student["orgUnitId"] is not None
     })
 
+    if not orgUnitIds:
+        return CourseStateResult()
+
+    logFunc(f"Checking {len(orgUnitIds)} courses, one lookup each.")
+
     live = 0
     deleted = 0
     unknown = 0
+    checked = 0
 
     for orgUnitId in orgUnitIds:
+        checked += 1
+        if checked % CONFIRM_PROGRESS_INTERVAL == 0:
+            logFunc(f"  checked {checked} of {len(orgUnitIds)} courses, "
+                    f"{deleted} deleted so far")
         try:
             api.getOrgUnit(orgUnitId)
         except D2lApiError as error:
@@ -196,16 +217,22 @@ def confirmCourseStates(
     return CourseStateResult(live=live, deleted=deleted, unknown=unknown)
 
 
-# Report progress every this many users, so a walk over a large tenant
-# shows signs of life without flooding the console.
-SCAN_PROGRESS_INTERVAL = 5000
+# Report progress every this many users. The walk is one long HTTP
+# conversation with nothing to show for it in between, so this is set low
+# enough that a tenant of any size shows movement within a few seconds.
+SCAN_PROGRESS_INTERVAL = 500
+
+# Same idea for the course confirmation pass, which spends one API call
+# per course. The count is lower because courses are far fewer than users
+# and each call is slower.
+CONFIRM_PROGRESS_INTERVAL = 100
 
 
 def scanDemoStudents(
     api: DemoStudentScanApi,
     config: AppConfig,
     db: MetricsDb,
-    logFunc: Callable[[str], None] = print,
+    logFunc: Callable[[str], None] = emit,
 ) -> DemoStudentScanResult:
     """Walk D2L's user list and record every demo student into the inventory.
 
@@ -224,6 +251,9 @@ def scanDemoStudents(
     response, so a role that cannot read usernames matches nothing and
     looks exactly like a tenant with no demo students.
     """
+    logFunc(f"Reading every user from {config.host}. This is the slow part; "
+            f"a large tenant takes a while.")
+
     usersWalked = 0
     demoStudents: list[dict] = []
     unparsed: list[str] = []
@@ -246,6 +276,10 @@ def scanDemoStudents(
         if not userName:
             continue
 
+        if usersWalked % SCAN_PROGRESS_INTERVAL == 0:
+            logFunc(f"  walked {usersWalked} users, "
+                    f"{len(demoStudents)} demo students so far")
+
         orgUnitId = parseDemoStudentUsername(userName, config)
         if orgUnitId is None:
             if userName.lower().startswith(f"{config.usernamePrefix}.".lower()):
@@ -259,9 +293,6 @@ def scanDemoStudents(
             "orgUnitId": orgUnitId,
             "isActive": bool(user.get("Activation", {}).get("IsActive", True)),
         })
-
-        if usersWalked % SCAN_PROGRESS_INTERVAL == 0:
-            logFunc(f"  walked {usersWalked} users, {len(demoStudents)} demo students so far")
 
     if usersWalked and not sawAnyUsername:
         raise DemoStudentScanAborted(
@@ -322,7 +353,7 @@ def deleteOrphanedDemoStudents(
     orphans: list[OrphanedDemoStudent],
     runId: int | None = None,
     hardDelete: bool = False,
-    logFunc: Callable[[str], None] = print,
+    logFunc: Callable[[str], None] = emit,
 ) -> OrphanDeleteOutcome:
     """Retire the demo students in a list and update the inventory.
 
