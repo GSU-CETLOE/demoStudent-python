@@ -69,6 +69,7 @@ working/
   token/token.json       OAuth2 token store
   token/token.json.lock  guards token refresh between concurrent processes
   logs/                  monthly log files (dir name via `logDir`)
+  datasets/              downloaded Brightspace Data Sets extracts
   localhost.pem(-key)    mkcert certificate for the browser auth flow
 ```
 
@@ -106,9 +107,12 @@ scopes:
 | `POST /lp/{v}/enrollments/` | `enrollment:orgunit:create` |
 | `PUT /lp/{v}/users/{userId}/activation` | `users:activation:update` |
 | `DELETE /lp/{v}/users/{userId}` | `users:userdata:delete` |
+| `GET /lp/{v}/datasets/bds` and its extract routes | `datasets:bds:read` |
 
-The last two are used only by `delete-orphans`. Leave them off if you are
-not running it; the other commands work the same either way.
+The delete and activation scopes are used only by `delete-orphans`, and
+`datasets:bds:read` only by the orphan commands' Data Sets path. Leave
+any of them off and the rest of the tool works unchanged; without the
+Data Sets scope the orphan commands fall back to the live user API.
 
 As one scope string (spaces separate scopes, commas separate permissions on the
 same resource, with no spaces around the commas):
@@ -161,6 +165,8 @@ Names below are as they appear in Brightspace and are grouped by tool.
 | Users | **Delete a User** | Organization | `DELETE /lp/{v}/users/{userId}`, for `delete-orphans --hard-delete` |
 | Users | **See the User Management tool** | Organization | required alongside both of the above |
 | Users | **Update a User** | Organization | required alongside `Can Activate or Deactivate Users` |
+| Brightspace Data Sets | **Can Access Brightspace Data Sets** | Organization | the Users extract; without it the orphan commands fall back to the live API |
+| Custom Reporting Framework | **Can see data hub** | Organization | required alongside the above |
 
 The last four are needed only for `delete-orphans`, and they have a
 dependency that user creation does not. `Create a User in the Database`
@@ -362,16 +368,42 @@ nothing. Read-only against D2L.
 
 ```sh
 uv run demo-student find-orphans                    # report from the cached inventory
-uv run demo-student find-orphans --rescan           # re-read D2L's user list first
+uv run demo-student find-orphans --rescan           # rebuild the inventory first
+uv run demo-student find-orphans --rescan --api-walk  # read live instead of the extract
 uv run demo-student find-orphans --out orphans.csv  # also write the list to CSV
 ```
 
 #### How it finds them
 
-Two passes. The first walks D2L's user list and records every account
-named `{usernamePrefix}.{orgUnitId}` into a local `demoStudents` table.
-The second looks up each distinct course once and marks it live,
-deleted, or unconfirmable.
+Two passes. The first reads every user out of D2L and records the demo
+students into a local `demoStudents` table. The second looks up each
+distinct course once and marks it live, deleted, or unconfirmable.
+
+#### Where the user list comes from
+
+Two sources, and the command picks the better one on its own.
+
+**Brightspace Data Sets**, when the tenant has it. D2L publishes a Users
+data set as a zipped CSV, downloaded to `working/datasets/` and read
+locally. It carries `OrgRoleId`, so an account has to hold the demo
+student role *and* match the username pattern before the tool will touch
+it.
+
+**The live user API**, when Data Sets is unavailable. This pages through
+every user in the tenant, which is slower, and its listing carries no
+role at all, so accounts are matched on username alone.
+
+D2L regenerates full extracts weekly by default, so the Data Sets path
+can be up to a week behind. That is fine here, since an orphaned demo
+student has usually been orphaned for months, and the run prints the
+extract's generation date so you can see how old it is. Use `--api-walk`
+when you need the live answer.
+
+One consequence of the weekly cycle: a demo student created since the
+last extract is missing from it, so a course deleted within days of
+being set up may not surface until the next extract. Neither source can
+wrongly delete anything, because the course lookup that decides is
+always live.
 
 The walk is the expensive half, so it runs only when the inventory is
 empty or when `--rescan` asks for it. Course states get re-confirmed
@@ -502,11 +534,15 @@ One failure never stops the rest. Exit code is 1 if any failed.
 
 #### A caveat on matching
 
-Demo students are identified by username alone, since D2L's user listing
-carries no role field. An account someone created by hand as
-`demo.12345` would be taken for one of ours. Accounts matching the
-prefix with no usable org unit id, `demo.legacy` and the like, get
-counted and reported rather than acted on.
+On the Data Sets path an account must hold the configured `roleId` as
+well as match the username pattern, so something named `demo.12345` by
+hand is reported and left alone.
+
+The live API path cannot make that check, because D2L's user listing
+carries no role field, so `--api-walk` matches on username alone. Either
+way, accounts matching the prefix with no usable org unit id,
+`demo.legacy` and the like, are counted and reported rather than acted
+on.
 
 ### `demo-student status`
 

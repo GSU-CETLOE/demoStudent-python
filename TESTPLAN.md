@@ -84,6 +84,24 @@ Read-only against D2L throughout.
       detection works. If it is not reported, the lookup returns 200 and
       detection only finds courses purged from the recycle bin. Note that
       in README.md before relying on the cleanup
+- [ ] `uv run demo-student find-orphans --rescan` uses Brightspace Data
+      Sets when the tenant has it: the output names the extract's
+      generation date and reports "Users read" rather than "Users walked"
+- [ ] The generation date is within about a week. A much older date means
+      extract generation is failing on the tenant
+- [ ] On an account without `Can Access Brightspace Data Sets`, the same
+      command says Data Sets is unavailable, falls back to the live API,
+      and still finds the same orphans
+- [ ] `--api-walk` skips Data Sets entirely and reports "Users walked"
+- [ ] The downloaded extract lands in `working/datasets/` named for its
+      generation date
+- [ ] A second `--rescan` in the same week reuses that file rather than
+      downloading again ("Using the Users extract already downloaded")
+- [ ] **Role gate.** Create an account named `demo.999999` by hand with
+      an ordinary student role, delete nothing, and run
+      `find-orphans --rescan`. It is counted as left alone, not reported
+      as an orphan. Repeat with `--api-walk` and confirm the live path
+      cannot make that distinction (it has no role to check)
 - [ ] The first `find-orphans --rescan` prints progress while it runs:
       a line naming the host before the walk, periodic "walked N users"
       lines, then "Checking N courses" and periodic "checked N of M"
