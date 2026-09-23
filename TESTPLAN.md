@@ -106,6 +106,13 @@ Read-only against D2L throughout.
       a line naming the host before the walk, periodic "walked N users"
       lines, then "Checking N courses" and periodic "checked N of M"
       lines. It should never sit silent for more than a few seconds
+- [ ] Every progress and result line starts with a timestamp matching the
+      log file format (`2026-09-22 18:45:12`)
+- [ ] Summary blocks and the `status` table keep their column alignment,
+      with the timestamp on the block header rather than each row
+- [ ] `uv run demo-student whoami`, `status`, and `import-legacy` all
+      carry timestamps too
+- [ ] An error (e.g. a missing config file) is timestamped on stderr
 - [ ] Progress still appears when the output is redirected
       (`uv run demo-student find-orphans --rescan > run.log &` then
       `tail -f run.log`), rather than arriving all at once at the end

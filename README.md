@@ -414,15 +414,18 @@ Both passes print progress as they go, so a long run shows movement
 rather than sitting silent:
 
 ```
-No demo student inventory yet, so this run has to build one.
-Reading every user from yourschool.brightspace.com. This is the slow part.
-  walked 500 users, 125 demo students so far
-  walked 1000 users, 250 demo students so far
-  ...
-Checking 750 courses, one lookup each.
-  checked 100 of 750 courses, 2 deleted so far
-  ...
+2026-09-22 18:45:12  No demo student inventory yet, so this run has to build one.
+2026-09-22 18:45:12  Reading every user from yourschool.brightspace.com.
+2026-09-22 18:45:31    walked 500 users, 125 demo students so far
+2026-09-22 18:45:49    walked 1000 users, 250 demo students so far
+2026-09-22 18:52:06  Checking 750 courses, one lookup each.
+2026-09-22 18:53:20    checked 100 of 750 courses, 2 deleted so far
 ```
+
+Every line carries the time it happened, in the format the log files
+use, so a console session and `working/logs/demoStudent_YYYYMM.log` can
+be read side by side. Summaries and tables print as one block under a
+stamped header, keeping their columns aligned.
 
 Why read the accounts from D2L instead of from `completedCourses`? That
 table is a skip list and gets pruned after a year. A course deleted
