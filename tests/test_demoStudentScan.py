@@ -280,3 +280,43 @@ def test_scanWithNoUsersRecordsNothing(config, db):
 
     assert result.demoStudentsFound == 0
     assert db.demoStudents() == []
+
+
+def test_orphansComeFromTheInventoryNotCompletedCourses(config, db):
+    """The whole point: an orphan with no completedCourses row is still found."""
+    from demostudent.orphans import findOrphansFromInventory
+
+    db.recordDemoStudents([
+        {"userId": 9301, "userName": "demo.301", "orgUnitId": 301, "isActive": True},
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": True},
+    ])
+    db.setCourseState(302, "deleted")
+    db.setCourseState(301, "live")
+    assert db.completedOrgUnitIds() == set()  # nothing in the skip list at all
+
+    orphans = findOrphansFromInventory(db)
+
+    assert [orphan.orgUnitId for orphan in orphans] == [302]
+    assert orphans[0].userName == "demo.302"
+    assert orphans[0].userId == 9302
+
+
+def test_unknownCourseStateIsNeverAnOrphan(config, db):
+    from demostudent.orphans import findOrphansFromInventory
+
+    db.recordDemoStudents([
+        {"userId": 9303, "userName": "demo.303", "orgUnitId": 303, "isActive": True}])
+    # never confirmed, so it stays 'unknown'
+    assert findOrphansFromInventory(db) == []
+
+
+def test_alreadyInactiveOrphansAreExcludedByDefault(config, db):
+    """A deactivated demo student has already been retired; leave it be."""
+    from demostudent.orphans import findOrphansFromInventory
+
+    db.recordDemoStudents([
+        {"userId": 9302, "userName": "demo.302", "orgUnitId": 302, "isActive": False}])
+    db.setCourseState(302, "deleted")
+
+    assert findOrphansFromInventory(db) == []
+    assert len(findOrphansFromInventory(db, includeInactive=True)) == 1

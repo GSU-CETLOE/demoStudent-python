@@ -485,3 +485,32 @@ def scanDemoStudents(
         usersWalked=usersWalked, demoStudentsFound=len(demoStudents),
         newlyRecorded=newlyRecorded, unparsed=unparsed,
     )
+
+
+def findOrphansFromInventory(
+    db: MetricsDb,
+    includeInactive: bool = False,
+) -> list[OrphanedDemoStudent]:
+    """Demo students in the inventory whose course is confirmed deleted.
+
+    Reads only what confirmCourseStates already established. A course in
+    the 'unknown' state is never an orphan, which is what keeps a
+    permissions gap from turning into a mass cleanup.
+
+    Demo students already deactivated are left out by default: they have
+    been retired once and re-reporting them every run is noise. Pass
+    includeInactive=True to list them anyway, which is useful when the
+    plan is to hard-delete accounts that were deactivated earlier.
+    """
+    orphans = []
+    for student in db.demoStudents(courseState="deleted"):
+        if not includeInactive and not student["isActive"]:
+            continue
+        orphans.append(OrphanedDemoStudent(
+            orgUnitId=student["orgUnitId"],
+            userName=student["userName"],
+            userId=student["userId"],
+            courseName=None,
+            courseCode=None,
+        ))
+    return orphans
