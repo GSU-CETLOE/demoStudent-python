@@ -84,6 +84,13 @@ Read-only against D2L throughout.
       detection works. If it is not reported, the lookup returns 200 and
       detection only finds courses purged from the recycle bin. Note that
       in README.md before relying on the cleanup
+- [ ] The first `find-orphans --rescan` prints progress while it runs:
+      a line naming the host before the walk, periodic "walked N users"
+      lines, then "Checking N courses" and periodic "checked N of M"
+      lines. It should never sit silent for more than a few seconds
+- [ ] Progress still appears when the output is redirected
+      (`uv run demo-student find-orphans --rescan > run.log &` then
+      `tail -f run.log`), rather than arriving all at once at the end
 - [ ] **Check the scan sees the whole tenant.** The first
       `find-orphans --rescan` prints "Users walked" and "Demo students
       found". Compare the demo student count against what you expect for

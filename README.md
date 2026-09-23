@@ -378,6 +378,20 @@ empty or when `--rescan` asks for it. Course states get re-confirmed
 every time, since a course can be deleted long after its demo student
 was first seen.
 
+Both passes print progress as they go, so a long run shows movement
+rather than sitting silent:
+
+```
+No demo student inventory yet, so this run has to build one.
+Reading every user from yourschool.brightspace.com. This is the slow part.
+  walked 500 users, 125 demo students so far
+  walked 1000 users, 250 demo students so far
+  ...
+Checking 750 courses, one lookup each.
+  checked 100 of 750 courses, 2 deleted so far
+  ...
+```
+
 Why read the accounts from D2L instead of from `completedCourses`? That
 table is a skip list and gets pruned after a year. A course deleted
 after its row ages out leaves nothing behind to notice, and the oldest
