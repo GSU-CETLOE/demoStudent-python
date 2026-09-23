@@ -311,10 +311,17 @@ def mockOrgUnit(orgUnitId, status=200):
         status, json={"Errors": [{"Message": "Resource Not Found"}]}))
 
 
+def mockNoDataSets():
+    """Data Sets unavailable, so the scan falls back to the live API."""
+    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+        return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
+
+
 def mockUserWalk(users):
     """GET /users/ returning one page of User.UserData entries."""
     respx.get(f"{BASE}/d2l/api/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    mockNoDataSets()
     respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
@@ -390,6 +397,7 @@ def test_findOrphansAbortsWhenUsernamesAreHidden(configPath, storedTokens, capsy
     """An under-permissioned role would otherwise report a clean empty tenant."""
     respx.get(f"{BASE}/d2l/api/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    mockNoDataSets()
     respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
@@ -518,3 +526,87 @@ def test_deleteOrphansReportsFailureAndExitsOne(configPath, storedTokens, capsys
 
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 1
     assert "Failed:               1" in capsys.readouterr().out
+
+
+def mockDataSetsUsers(rows):
+    """A Users data set with one downloadable full extract."""
+    import io
+    import zipfile
+
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    schemaId = "11111111-1111-1111-1111-111111111111"
+    pluginId = "22222222-2222-2222-2222-222222222222"
+    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+        return_value=httpx.Response(200, json={"Objects": [{
+            "SchemaId": schemaId,
+            "Full": {"PluginId": pluginId, "Name": "Users",
+                     "Description": "", "ExtractsLink": ""},
+            "Differential": None, "ExtractsLink": "",
+        }], "Next": None}))
+    respx.get(
+        f"{BASE}/d2l/api/lp/1.47/datasets/bds/{schemaId}/plugins/{pluginId}/extracts"
+    ).mock(return_value=httpx.Response(200, json={"Objects": [{
+        "SchemaId": schemaId, "PluginId": pluginId, "BdsType": "Full",
+        "CreatedDate": "2026-09-15T03:00:00.000Z", "DownloadSize": 100,
+        "DownloadLink": f"{BASE}/d2l/api/lp/1.47/datasets/bds/dl", "Version": "11.7",
+    }], "Next": None}))
+
+    header = ("UserId,UserName,OrgDefinedId,FirstName,MiddleName,LastName,"
+              "IsActive,ExternalEmail,CreationDate,Version,OrgRoleId,DateDeleted")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Users.csv", "\n".join([header] + rows))
+    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/dl").mock(
+        return_value=httpx.Response(200, content=buffer.getvalue()))
+
+
+def dataSetRow(userId, userName, orgRoleId="783"):
+    return f"{userId},{userName},,Demo,,Student,1,,2026-01-01 00:00:00.000,1,{orgRoleId},"
+
+
+@respx.mock
+def test_findOrphansPrefersDataSetsOverTheApiWalk(configPath, storedTokens, capsys):
+    mockDataSetsUsers([dataSetRow(9302, "demo.302")])
+    mockOrgUnit(302, status=404)
+    walkRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    assert not walkRoute.called
+    out = capsys.readouterr().out
+    assert "2026-09-15" in out  # the extract date is shown, so staleness is visible
+    assert "demo.302" in out
+
+
+@respx.mock
+def test_dataSetsScanRequiresTheDemoStudentRole(configPath, storedTokens, capsys):
+    """An account named like a demo student but holding another role is left alone."""
+    mockDataSetsUsers([
+        dataSetRow(9302, "demo.302", orgRoleId="783"),
+        dataSetRow(9999, "demo.12345", orgRoleId="110"),
+    ])
+    mockOrgUnit(302, status=404)
+    mockOrgUnit(12345, status=404)
+
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    out = capsys.readouterr().out
+    assert "demo.302" in out
+    assert "demo.12345" not in out.split("Orphaned:")[-1]
+
+
+@respx.mock
+def test_apiWalkFlagSkipsDataSets(configPath, storedTokens, capsys):
+    mockDataSetsUsers([dataSetRow(9302, "demo.302")])
+    dataSetRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds")
+    dataSetRoute.reset()
+    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+        return_value=httpx.Response(200, json={
+            "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
+            "Items": [{"UserId": 9302, "UserName": "demo.302",
+                       "Activation": {"IsActive": True}}],
+        }))
+    mockOrgUnit(302, status=404)
+
+    assert main(["--config", str(configPath), "find-orphans", "--api-walk"]) == 0
+    assert not dataSetRoute.called
+    assert "Users walked" in capsys.readouterr().out

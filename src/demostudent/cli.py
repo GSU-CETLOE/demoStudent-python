@@ -29,6 +29,7 @@ from .config import AppConfig, ConfigError, loadConfig
 from .d2lApi import D2lApiClient, D2lApiError
 from .db import MetricsDb
 from .logs import LOGGER_NAME, setupFileLogging
+from .dataSets import scanDemoStudentsFromDataSets
 from .orphans import (DemoStudentScanAborted, OrphanedDemoStudent,
                       confirmCourseStates, deleteOrphanedDemoStudents,
                       emit, findOrphansFromInventory, scanDemoStudents)
@@ -78,8 +79,11 @@ def buildParser() -> argparse.ArgumentParser:
         "find-orphans",
         help="Report demo students whose course offering no longer exists (changes nothing)")
     orphanParser.add_argument("--rescan", action="store_true",
-                              help="Re-walk D2L's user list before reporting, instead of "
-                                   "using the cached inventory")
+                              help="Rebuild the demo student inventory before reporting, "
+                                   "instead of using the cached one")
+    orphanParser.add_argument("--api-walk", action="store_true",
+                              help="Read users from the live API instead of the weekly "
+                                   "Brightspace Data Sets extract")
     orphanParser.add_argument("--out", metavar="PATH",
                               help="Write the orphan list to a CSV file as well")
 
@@ -94,8 +98,11 @@ def buildParser() -> argparse.ArgumentParser:
                                          "reverses this only by support request, within 30 "
                                          "days, and only while the username is unused")
     deleteOrphanParser.add_argument("--rescan", action="store_true",
-                                    help="Re-walk D2L's user list before acting, instead of "
-                                         "using the cached inventory")
+                                    help="Rebuild the demo student inventory before acting, "
+                                         "instead of using the cached one")
+    deleteOrphanParser.add_argument("--api-walk", action="store_true",
+                                    help="Read users from the live API instead of the weekly "
+                                         "Brightspace Data Sets extract")
     deleteOrphanParser.add_argument("--out", metavar="PATH",
                                     help="Write the orphan list to a CSV file as well")
 
@@ -193,11 +200,41 @@ def _writeOrphanCsv(orphans: list[OrphanedDemoStudent], outPath: Path) -> None:
             writer.writerow([orphan.orgUnitId, orphan.userName, orphan.userId])
 
 
+def _refreshInventory(api, config: AppConfig, db: MetricsDb, useApiWalk: bool) -> None:
+    """Rebuild the demo student inventory from whichever source is available.
+
+    Brightspace Data Sets is preferred, because its Users extract carries
+    the org-level role and so can tell a real demo student from an
+    account merely named like one. It is regenerated weekly, which is
+    fine for finding accounts whose course has been gone for months.
+
+    Falls back to walking the live user API when Data Sets is not
+    available, which covers the tool being off for the tenant, the role
+    lacking permission, and the token lacking the scope. --api-walk
+    forces the live source when the extract is too stale to trust.
+    """
+    if not useApiWalk:
+        dataSetResult = scanDemoStudentsFromDataSets(api, config, db)
+        if dataSetResult is not None:
+            emit("")
+            emit(f"  Extract generated:    {dataSetResult.extractCreatedDate}")
+            emit(f"  Users read:           {dataSetResult.rowsRead}")
+            emit(f"  Demo students found:  {dataSetResult.demoStudentsFound}")
+            return
+        emit("Falling back to reading users from the live API.")
+
+    scanResult = scanDemoStudents(api, config, db)
+    emit("")
+    emit(f"  Users walked:         {scanResult.usersWalked}")
+    emit(f"  Demo students found:  {scanResult.demoStudentsFound}")
+
+
 def _buildInventory(
     api,
     config: AppConfig,
     db: MetricsDb,
     rescan: bool,
+    useApiWalk: bool = False,
 ) -> list[OrphanedDemoStudent]:
     """Refresh the demo student inventory if needed, then confirm course states.
 
@@ -210,10 +247,7 @@ def _buildInventory(
     if rescan or not cached:
         if not cached:
             emit("No demo student inventory yet, so this run has to build one.")
-        scanResult = scanDemoStudents(api, config, db)
-        emit("")
-        emit(f"  Users walked:         {scanResult.usersWalked}")
-        emit(f"  Demo students found:  {scanResult.demoStudentsFound}")
+        _refreshInventory(api, config, db, useApiWalk=useApiWalk)
     else:
         emit(f"Using the cached inventory of {len(cached)} demo students "
              f"(--rescan to refresh it).")
@@ -241,7 +275,8 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     db = MetricsDb(config.dbPath)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
-        orphans = _buildInventory(api, config, db, rescan=args.rescan)
+        orphans = _buildInventory(api, config, db, rescan=args.rescan,
+                                  useApiWalk=args.api_walk)
     finally:
         api.close()
         db.close()
@@ -274,7 +309,8 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     db = MetricsDb(config.dbPath)
     api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
     try:
-        orphans = _buildInventory(api, config, db, rescan=args.rescan)
+        orphans = _buildInventory(api, config, db, rescan=args.rescan,
+                                  useApiWalk=args.api_walk)
         emit(f"  Orphaned:             {len(orphans)}")
 
         if args.out:

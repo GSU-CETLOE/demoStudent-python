@@ -19,11 +19,22 @@ and the IsActive flag, so everything is converted explicitly.
 
 import csv
 import io
+import logging
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable, Protocol
 
 from .config import AppConfig
+from .db import MetricsDb
+from .logs import LOGGER_NAME
+
+fileLogger = logging.getLogger(LOGGER_NAME)
+
+# Downloaded extracts live here under the working directory, beside the
+# database and logs.
+EXTRACT_SUBDIR = "datasets"
 
 USERS_DATA_SET_NAME = "Users"
 
@@ -142,4 +153,102 @@ def readDemoStudentsFromExtract(
     return ExtractReadResult(
         demoStudents=demoStudents, rowsRead=rowsRead,
         unparsed=unparsed, wrongRole=wrongRole,
+    )
+
+
+class DataSetsApi(Protocol):
+    """The slice of D2lApiClient that Data Sets reading needs."""
+
+    def findDataSet(self, name: str) -> dict[str, Any] | None: ...
+    def latestExtract(self, schemaId: str, pluginId: str) -> dict[str, Any] | None: ...
+    def downloadExtract(self, downloadLink: str, target: Path) -> Path: ...
+
+
+@dataclass(frozen=True)
+class DataSetScanResult:
+    """What one read of a Users extract turned up."""
+
+    rowsRead: int = 0
+    demoStudentsFound: int = 0
+    newlyRecorded: int = 0
+    unparsed: list[str] = field(default_factory=list)
+    wrongRole: list[str] = field(default_factory=list)
+    extractCreatedDate: str = ""
+
+
+def _extractPath(config: AppConfig, createdDate: str) -> Path:
+    """Where one extract lands, named for when D2L generated it.
+
+    Naming by generation date means a re-run inside the same week finds
+    the file already there and skips the download.
+    """
+    stamp = re.sub(r"[^0-9A-Za-z]", "", createdDate)
+    return config.workingDir / EXTRACT_SUBDIR / f"Users_{stamp}.zip"
+
+
+def scanDemoStudentsFromDataSets(
+    api: DataSetsApi,
+    config: AppConfig,
+    db: MetricsDb,
+    logFunc: Callable[[str], None] = print,
+) -> DataSetScanResult | None:
+    """Record demo students from the newest Users extract into the inventory.
+
+    Returns None when Data Sets cannot be used, which covers the tool
+    being switched off for the tenant, the role lacking permission, the
+    token lacking the scope, and no full extract having been generated
+    yet. D2L reports the first three identically, so the caller falls
+    back to another source rather than trying to tell them apart.
+
+    The extract is kept on disk under the working directory. D2L
+    regenerates it weekly by default, so a re-run in the same week reads
+    the file already downloaded instead of fetching it again.
+    """
+    dataSet = api.findDataSet(USERS_DATA_SET_NAME)
+    if dataSet is None:
+        logFunc("Brightspace Data Sets is not available for this account.")
+        return None
+
+    extract = api.latestExtract(dataSet["schemaId"], dataSet["pluginId"])
+    if extract is None:
+        logFunc("Brightspace Data Sets has no full Users extract yet.")
+        return None
+
+    createdDate = extract["createdDate"]
+    archivePath = _extractPath(config, createdDate)
+
+    if archivePath.is_file():
+        logFunc(f"Using the Users extract already downloaded, generated {createdDate}.")
+    else:
+        logFunc(f"Downloading the Users extract generated {createdDate}. "
+                f"D2L regenerates this weekly, so it can be up to a week behind.")
+        api.downloadExtract(extract["downloadLink"], archivePath)
+
+    readResult = readDemoStudentsFromExtract(archivePath, config)
+    newlyRecorded = db.recordDemoStudents(readResult.demoStudents)
+
+    logFunc(f"Read {readResult.rowsRead} users; found "
+            f"{len(readResult.demoStudents)} demo students "
+            f"({newlyRecorded} new to the inventory).")
+    if readResult.wrongRole:
+        noun = "account" if len(readResult.wrongRole) == 1 else "accounts"
+        logFunc(f"  Left alone: {len(readResult.wrongRole)} {noun} named like a demo "
+                f"student but not holding role {config.roleId}.")
+    if readResult.unparsed:
+        noun = "account" if len(readResult.unparsed) == 1 else "accounts"
+        logFunc(f"  Left alone: {len(readResult.unparsed)} {noun} matching the "
+                f"'{config.usernamePrefix}.' prefix with no usable org unit id.")
+
+    fileLogger.info(
+        f"Data Sets scan (extract {createdDate}): read {readResult.rowsRead} users, "
+        f"found {len(readResult.demoStudents)} demo students, {newlyRecorded} new, "
+        f"{len(readResult.wrongRole)} wrong role, {len(readResult.unparsed)} unparsed")
+
+    return DataSetScanResult(
+        rowsRead=readResult.rowsRead,
+        demoStudentsFound=len(readResult.demoStudents),
+        newlyRecorded=newlyRecorded,
+        unparsed=readResult.unparsed,
+        wrongRole=readResult.wrongRole,
+        extractCreatedDate=createdDate,
     )

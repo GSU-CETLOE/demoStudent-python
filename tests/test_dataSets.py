@@ -335,3 +335,100 @@ def test_rejectsAnExtractMissingTheColumnsItNeeds(config, tmp_path):
     with pytest.raises(DataSetFormatError) as excInfo:
         readDemoStudentsFromExtract(archive, config)
     assert "UserName" in str(excInfo.value)
+
+
+class FakeDataSetsApi:
+    """Stand-in D2L with a Users data set and a downloadable extract."""
+
+    def __init__(self, rows, available=True, extract=True):
+        self.rows = rows
+        self.available = available
+        self.extract = extract
+        self.downloads = 0
+
+    def findDataSet(self, name):
+        if not self.available:
+            return None
+        return {"schemaId": USERS_SCHEMA, "pluginId": USERS_PLUGIN, "name": name}
+
+    def latestExtract(self, schemaId, pluginId):
+        if not self.extract:
+            return None
+        return {"createdDate": "2026-09-15T03:00:00.000Z",
+                "downloadLink": f"{BASE}/download", "downloadSize": 1024,
+                "version": "11.7"}
+
+    def downloadExtract(self, downloadLink, target):
+        self.downloads += 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        writeUsersZip(target, self.rows)
+        return target
+
+
+@pytest.fixture
+def db(config):
+    from demostudent.db import MetricsDb
+    metricsDb = MetricsDb(config.dbPath)
+    yield metricsDb
+    metricsDb.close()
+
+
+def test_scanFromDataSetsRecordsDemoStudents(config, db):
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    api = FakeDataSetsApi([userRow(9301, "demo.301"), userRow(9302, "demo.302")])
+    result = scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None)
+
+    assert result is not None
+    assert result.demoStudentsFound == 2
+    assert {student["userName"] for student in db.demoStudents()} == {"demo.301", "demo.302"}
+
+
+def test_scanFromDataSetsReturnsNoneWhenUnavailable(config, db):
+    """Not provisioned, no permission, or no scope all look the same."""
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    api = FakeDataSetsApi([], available=False)
+    assert scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None) is None
+
+
+def test_scanFromDataSetsReturnsNoneWithNoExtract(config, db):
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    api = FakeDataSetsApi([], extract=False)
+    assert scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None) is None
+
+
+def test_scanReportsExtractAgeSoStalenessIsVisible(config, db):
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    lines = []
+    api = FakeDataSetsApi([userRow(9301, "demo.301")])
+    scanDemoStudentsFromDataSets(api, config, db, logFunc=lines.append)
+
+    assert any("2026-09-15" in line for line in lines), lines
+
+
+def test_scanReusesAnAlreadyDownloadedExtract(config, db):
+    """A weekly extract need not be re-downloaded on every rescan."""
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    api = FakeDataSetsApi([userRow(9301, "demo.301")])
+    scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None)
+    scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None)
+
+    assert api.downloads == 1
+
+
+def test_scanRecordsWrongRoleAccountsWithoutActingOnThem(config, db):
+    from demostudent.dataSets import scanDemoStudentsFromDataSets
+
+    api = FakeDataSetsApi([
+        userRow(9301, "demo.301", orgRoleId="783"),
+        userRow(9999, "demo.12345", orgRoleId="110"),
+    ])
+    result = scanDemoStudentsFromDataSets(api, config, db, logFunc=lambda _line: None)
+
+    assert result.demoStudentsFound == 1
+    assert result.wrongRole == ["demo.12345"]
+    assert {student["userName"] for student in db.demoStudents()} == {"demo.301"}
