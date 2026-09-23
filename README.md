@@ -356,9 +356,9 @@ skipped until they age out of the one-year retention window (see
 
 ### `demo-student find-orphans`
 
-Reports demo students whose course offering no longer exists. When a
-course is deleted, its `demo.{orgUnitId}` user stays behind with nothing
-to belong to. Read-only against D2L.
+Reports demo students whose course offering no longer exists. Delete a
+course and its `demo.{orgUnitId}` user stays behind, belonging to
+nothing. Read-only against D2L.
 
 ```sh
 uv run demo-student find-orphans                    # report from the cached inventory
@@ -370,21 +370,21 @@ uv run demo-student find-orphans --out orphans.csv  # also write the list to CSV
 
 Two passes. The first walks D2L's user list and records every account
 named `{usernamePrefix}.{orgUnitId}` into a local `demoStudents` table.
-The second looks up each distinct course once and records whether it is
-live, deleted, or unconfirmable.
+The second looks up each distinct course once and marks it live,
+deleted, or unconfirmable.
 
 The walk is the expensive half, so it runs only when the inventory is
-empty or `--rescan` asks for it. Course states are re-confirmed every
-time, because a course can be deleted long after its demo student was
-first seen.
+empty or when `--rescan` asks for it. Course states get re-confirmed
+every time, since a course can be deleted long after its demo student
+was first seen.
 
-Reading the accounts from D2L rather than from `completedCourses` is the
-whole point of the design. That table is a skip list, pruned after a
-year, so a course deleted after its row aged out leaves nothing behind.
-The oldest demo students are the ones most likely to have lost their
-course, which is exactly the population a `completedCourses` scan cannot
-see. A demo student's username carries its own org unit id, so the
-inventory does not depend on what the database happens to remember.
+Why read the accounts from D2L instead of from `completedCourses`? That
+table is a skip list and gets pruned after a year. A course deleted
+after its row ages out leaves nothing behind to notice, and the oldest
+demo students are the ones most likely to have lost their course. So the
+population that matters most is the one a `completedCourses` scan is
+worst at seeing. Reading from D2L sidesteps that, because a demo
+student's username carries its own org unit id.
 
 The verdict comes from the course lookup:
 
@@ -395,8 +395,8 @@ The verdict comes from the course lookup:
 | Any other error | Proof of nothing. Left alone |
 | `200` | The course is alive. Not an orphan |
 
-Only a 404 counts. Everything else leaves the course in the `unknown`
-state, and nothing acts on `unknown`.
+Only a 404 counts. Everything else leaves the course `unknown`, and
+cleanup skips those.
 
 #### Unverified: courses in the recycle bin
 
@@ -426,25 +426,25 @@ need to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.
 
 #### The scan refuses to run blind
 
-D2L filters its user listing by what the calling role may see, and
-withholds individual fields the same way, with nothing in the response to
-say so. A service account that cannot read usernames would match zero
-demo students and return a clean, well-formed, empty result that looks
-exactly like a tenant with nothing to clean up.
+D2L filters its user listing by what the calling role may see. It
+withholds individual fields the same way, and says nothing about either
+in the response. A service account that cannot read usernames matches
+zero demo students and gets back a clean, well-formed, empty result,
+indistinguishable from a tenant with nothing to clean up.
 
-The scan stops with exit code 2 when the first user comes back without a
-username, rather than walking the whole tenant to arrive at a false
-answer. Grant **See Usernames** under User Information Privacy and
-re-run.
+So the scan stops with exit code 2 on the first user that arrives
+without a username, rather than walking a few hundred thousand records
+to reach a wrong answer. Grant **See Usernames** under User Information
+Privacy, then re-run.
 
-Even so, treat the count as a floor rather than a census. If the number
-of demo students found is far below what you expect for the tenant, the
-service account is probably not seeing everything.
+That guard catches the total blackout, not a partial one. Compare the
+demo student count against what you expect for the tenant; if it comes
+in well under, the service account is seeing only part of the picture.
 
 ### `demo-student delete-orphans`
 
-Acts on what `find-orphans` reports, running the same two passes itself,
-and **deactivates** the orphaned demo students by default.
+Runs the same two passes as `find-orphans`, then acts on the result.
+**Deactivates** by default.
 
 ```sh
 uv run demo-student delete-orphans                          # report only; changes nothing
@@ -479,18 +479,19 @@ the user.
 
 A deactivated demo student is marked inactive and stays in the table, so
 later runs stop offering it. A hard-deleted one is dropped, since the
-account no longer exists in D2L. A user that fails keeps its row and its
-course state, so the next run offers it again. Failures land in the
-`errors` table under the `deleteOrphan` phase, where `status --errors`
-will show them. One failure never stops the rest. The command exits 1 if
-any failed.
+account no longer exists to track.
+
+A user that fails keeps both its row and its course state, which puts it
+back in front of you on the next run. Failures land in the `errors`
+table under the `deleteOrphan` phase, and `status --errors` shows them.
+One failure never stops the rest. Exit code is 1 if any failed.
 
 #### A caveat on matching
 
-Demo students are identified by username alone, because D2L's user
-listing carries no role field. An account someone created by hand named
-`demo.12345` would be treated as a demo student. Accounts that match the
-prefix but carry no usable org unit id, such as `demo.legacy`, are
+Demo students are identified by username alone, since D2L's user listing
+carries no role field. An account someone created by hand as
+`demo.12345` would be taken for one of ours. Accounts matching the
+prefix with no usable org unit id, `demo.legacy` and the like, get
 counted and reported rather than acted on.
 
 ### `demo-student status`
@@ -518,9 +519,9 @@ uv run demo-student import-legacy /path/to/demo_783_newuser_co.txt
 `working/db/demoStudent.db` (SQLite, WAL mode) with four tables:
 
 - `completedCourses` — org units that have their demo student; the skip list.
-- `demoStudents`, an inventory of demo student accounts that exist in D2L,
-  with the org unit each one names and what the last course lookup
-  concluded (`live`, `deleted`, or `unknown`).
+- `demoStudents`, an inventory of the demo student accounts that exist in
+  D2L, each with the org unit its username names and the verdict from the
+  last course lookup (`live`, `deleted`, or `unknown`).
 - `runs` — one row per run: timestamps, status, and counts (discovered,
   skipped, checked, users created, enrollments created, errors).
 - `errors` — individual failures with run id, org unit, phase, HTTP status,
@@ -530,9 +531,9 @@ Dashboards can read this file directly; the schema is stable.
 
 Retention: at the start of every run, rows older than one year are deleted
 from `completedCourses`, `runs`, and `errors`. **`demoStudents` is exempt.**
-It inventories accounts that exist in D2L, and the oldest of those are the
-ones most likely to have lost their course; ageing them out would hide
-exactly the orphans the cleanup exists to find. If a pruned course ever reappears in discovery it is
+Those rows track accounts that exist in D2L, and the oldest of them are
+the ones most likely to have lost their course. Ageing them out would
+hide the very orphans the cleanup is for. If a pruned course ever reappears in discovery it is
 simply re-checked (found already enrolled) and re-recorded — nothing is
 enrolled twice. To re-verify sooner than a year, use `run --recheck` instead
 of waiting on retention or editing `completedCourses` by hand.

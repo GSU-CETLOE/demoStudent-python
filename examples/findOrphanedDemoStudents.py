@@ -6,14 +6,14 @@ is visible without credentials:
 
     uv run python examples/findOrphanedDemoStudents.py
 
-The stand-in holds four accounts. demo.300 belongs to a live course.
-demo.302's course has been deleted. demo.303's course exists but is
-invisible to the service account. demo.legacy matches the prefix but
+The stand-in holds four demo accounts. demo.300 belongs to a live
+course. demo.302's course has been deleted. demo.303's course exists but
+the service account cannot see it. demo.legacy matches the prefix and
 carries no usable org unit id.
 
-Only demo.302 comes back orphaned. demo.303 is left alone because a
-course the account cannot see is not a deleted course, and demo.legacy
-is reported separately rather than guessed at.
+Only demo.302 comes back orphaned. demo.303 is left alone, because a
+course the account cannot see is not a deleted course. demo.legacy gets
+reported separately rather than guessed at.
 
 For the same thing against a real tenant, use the CLI:
 

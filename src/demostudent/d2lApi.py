@@ -154,21 +154,21 @@ class D2lApiClient:
     def iterUsers(self) -> Iterator[dict[str, Any]]:
         """Every user the calling account may see, following paging bookmarks.
 
-        Sends no query parameter other than the bookmark. D2L picks among
-        orgDefinedId, userName, externalEmail and bookmark in that fixed
-        order regardless of URL order, so adding any of the first three
-        would silently outrank the bookmark and re-return page one
+        Sends nothing but the bookmark. D2L picks among orgDefinedId,
+        userName, externalEmail and bookmark in that fixed order no
+        matter what order the URL puts them in, so adding any of the
+        first three would outrank the bookmark and re-return page one
         forever.
 
-        The bookmark D2L returns is a UserId, but it is echoed back as
-        given rather than recomputed from the last item, since the
+        The bookmark D2L hands back happens to be a UserId. It is echoed
+        as given rather than recomputed from the last item, since the
         server's value is the authoritative one.
 
         Caution: D2L filters this listing by what the calling role may
-        see, and says so only in its documentation. A short list comes
-        back as a clean, well-formed result with no indication that
-        anything was withheld. Callers must not treat the result as a
-        complete census of the tenant.
+        see, and mentions that only in its documentation. A short list
+        arrives as a clean, well-formed result with nothing to say
+        anything was withheld, so callers must not treat what comes back
+        as a complete census.
         """
         bookmark: str | None = None
         while True:

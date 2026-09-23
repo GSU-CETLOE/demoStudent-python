@@ -6,22 +6,22 @@ removing the wrong one is not recoverable, so every step here is built
 to fail toward doing nothing.
 
 Detection runs in two passes. scanDemoStudents walks D2L's user list and
-records every demo.{orgUnitId} account into the inventory;
-confirmCourseStates then looks up each distinct course once and records
-whether it is live, deleted, or unconfirmable.
+records every demo.{orgUnitId} account into the inventory.
+confirmCourseStates then looks up each distinct course once and marks it
+live, deleted, or unconfirmable.
 
-Reading the accounts from D2L rather than from the completedCourses
-table is the whole point. That table is a skip list pruned on a
-one-year clock, so a course deleted after its row aged out leaves
-nothing behind, and the oldest demo students are exactly the ones most
-likely to have lost their course. A demo student's username carries the
-org unit id it belongs to, which makes the inventory self-describing and
-independent of what the database happens to remember.
+The accounts come from D2L rather than from the completedCourses table
+for a specific reason. That table is a skip list pruned on a one-year
+clock, so a course deleted after its row ages out leaves nothing behind,
+and the oldest demo students are the ones most likely to have lost their
+course. The population that matters most is the one that table is worst
+at holding. A demo student's username carries the org unit id it belongs
+to, so reading from D2L needs nothing the database remembers.
 
-Only an explicit 404 on the course lookup marks a course deleted. A 403
-means the service account cannot see the course, which is a different
-thing, and any other error means the lookup failed. Both leave the state
-unknown, and nothing acts on unknown.
+Only an explicit 404 marks a course deleted. A 403 means the service
+account cannot see the course, which is a different thing, and any other
+error means the lookup simply failed. Both leave the state unknown, and
+nothing acts on unknown.
 
 Cleanup deactivates rather than deletes. D2L reverses a user deletion
 only through a support request, only within 30 days, and only while no
@@ -116,15 +116,14 @@ def parseDemoStudentUsername(userName: str, config: AppConfig) -> int | None:
     """The org unit id encoded in a demo student username, or None.
 
     Demo students are named {usernamePrefix}.{orgUnitId}, so the username
-    carries its own pointer back to the course. That is what makes an
-    inventory scan possible at all: it needs no database row to know
-    which course an account belongs to.
+    points back at its own course. That is what makes an inventory scan
+    possible: no database row is needed to know where an account belongs.
 
-    Returns None for anything that is not a demo student this tool would
-    have created. A name that starts with the prefix but carries no
-    usable org unit id, such as demo.legacy from some other process, is
-    rejected rather than guessed at. D2L usernames are not case
-    sensitive, so the prefix match is not either.
+    Returns None for anything this tool would not have created. A name
+    starting with the prefix but carrying no usable org unit id, such as
+    a demo.legacy left by some other process, is rejected rather than
+    guessed at. D2L usernames are not case sensitive, so neither is the
+    prefix match.
     """
     if not userName:
         return None
@@ -147,14 +146,14 @@ def confirmCourseStates(
 ) -> CourseStateResult:
     """Look up each inventoried demo student's course and record what it finds.
 
-    One lookup per distinct org unit, not per demo student, since several
-    accounts can in principle name the same course.
+    One lookup per distinct org unit rather than per demo student, since
+    several accounts can name the same course.
 
     Only an explicit 404 sets a course to 'deleted'. A 403 means the
-    service account cannot see the course, and anything else means the
-    lookup failed; both leave the state 'unknown', which no cleanup will
-    act on. That is the same fail-safe rule the rest of this module uses:
-    a course is presumed alive unless D2L says otherwise.
+    service account cannot see it, and anything else means the lookup
+    failed; both leave the state 'unknown', which no cleanup touches.
+    Same rule as everywhere else here: a course is presumed alive unless
+    D2L says otherwise.
     """
     students = db.demoStudents()
     orgUnitIds = sorted({
@@ -210,22 +209,20 @@ def scanDemoStudents(
 ) -> DemoStudentScanResult:
     """Walk D2L's user list and record every demo student into the inventory.
 
-    This is the half that makes orphan detection work on old courses. The
-    database's completedCourses table cannot answer the question, because
-    retention prunes it after a year and the oldest demo students are the
-    ones most likely to have lost their course. Reading the accounts
-    straight from D2L skips that problem: a demo student's username
-    carries the org unit id it belongs to, so the inventory is
-    self-describing.
+    This is the half that makes orphan detection work on old courses.
+    Retention prunes completedCourses after a year, so it cannot answer
+    the question for exactly the courses most likely to have been
+    deleted. Reading the accounts from D2L avoids that: a demo student's
+    username carries the org unit id it belongs to.
 
-    Nothing is judged here. The scan records what exists; deciding which
-    courses are gone is confirmCourseStates.
+    Nothing is judged here. The scan records what exists, and deciding
+    which courses are gone is confirmCourseStates' job.
 
-    Raises DemoStudentScanAborted if usernames are not visible. D2L
+    Raises DemoStudentScanAborted when usernames are not visible. D2L
     filters this listing by what the calling role may see and withholds
-    individual fields the same way, without saying so in the response, so
-    a role that cannot read usernames would match nothing and look like a
-    tenant with no demo students at all.
+    individual fields the same way, saying nothing about either in the
+    response, so a role that cannot read usernames matches nothing and
+    looks exactly like a tenant with no demo students.
     """
     usersWalked = 0
     demoStudents: list[dict] = []
@@ -296,14 +293,14 @@ def findOrphansFromInventory(
 ) -> list[OrphanedDemoStudent]:
     """Demo students in the inventory whose course is confirmed deleted.
 
-    Reads only what confirmCourseStates already established. A course in
-    the 'unknown' state is never an orphan, which is what keeps a
-    permissions gap from turning into a mass cleanup.
+    Reads only what confirmCourseStates already established. A course
+    still 'unknown' is never an orphan, which is what stops a permissions
+    gap becoming a mass cleanup.
 
-    Demo students already deactivated are left out by default: they have
-    been retired once and re-reporting them every run is noise. Pass
-    includeInactive=True to list them anyway, which is useful when the
-    plan is to hard-delete accounts that were deactivated earlier.
+    Demo students already deactivated are left out by default, since
+    re-reporting a retired account on every run is just noise. Pass
+    includeInactive=True to list them anyway, which helps when the plan
+    is to hard-delete what was deactivated earlier.
     """
     orphans = []
     for student in db.demoStudents(courseState="deleted"):
