@@ -62,6 +62,11 @@ class StandInD2l:
                 "Code": f"C{orgUnitId}", "Type": {"Id": 3}}
 
 
+def plural(count: int, noun: str) -> str:
+    """Count and noun, pluralized: '1 course', '2 courses'."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def main() -> None:
     """Run both detection passes against the stand-in and print the result."""
     # No log file is set up here, so silence the application logger rather
@@ -87,11 +92,11 @@ def main() -> None:
             for orphan in orphans:
                 print(f"  orphaned:      {orphan.userName} "
                       f"(course {orphan.orgUnitId} was deleted)")
-            print(f"  live:          {stateResult.live} course(s) still exist")
-            print(f"  unconfirmable: {stateResult.unknown} course(s) could not be "
-                  f"checked, so their demo students were left alone")
-            print(f"  unparsed:      {len(scanResult.unparsed)} account(s) match the "
-                  f"prefix but carry no org unit id")
+            print(f"  live:          {plural(stateResult.live, 'course')} still there")
+            print(f"  unconfirmable: {plural(stateResult.unknown, 'course')} could not "
+                  f"be checked, so the demo students were left alone")
+            print(f"  unparsed:      {plural(len(scanResult.unparsed), 'account')} "
+                  f"matching the prefix with no org unit id")
             print("\n  delete-orphans would deactivate only the orphaned one.")
         finally:
             db.close()
