@@ -1,19 +1,23 @@
-"""Scan for orphaned demo students without touching D2L or a real database.
+"""Find orphaned demo students without touching D2L or a real database.
 
 An orphaned demo student is one whose course offering has been deleted.
-This runs findOrphanedDemoStudents against a stand-in D2L, so the safety
-behavior is visible without credentials:
+This runs both detection passes against a stand-in D2L, so the behavior
+is visible without credentials:
 
     uv run python examples/findOrphanedDemoStudents.py
 
-Course 300 is live, 302 has been deleted, and 303 exists but is
-invisible to the service account. Only 302 comes back as orphaned. 303
-is counted unconfirmable and left alone, because a course the account
-cannot see is not a deleted course.
+The stand-in holds four accounts. demo.300 belongs to a live course.
+demo.302's course has been deleted. demo.303's course exists but is
+invisible to the service account. demo.legacy matches the prefix but
+carries no usable org unit id.
 
-For the same scan against a real tenant, use the CLI:
+Only demo.302 comes back orphaned. demo.303 is left alone because a
+course the account cannot see is not a deleted course, and demo.legacy
+is reported separately rather than guessed at.
 
-    uv run demo-student find-orphans --out working/orphans.csv
+For the same thing against a real tenant, use the CLI:
+
+    uv run demo-student find-orphans --rescan --out working/orphans.csv
 """
 
 import logging
@@ -24,7 +28,8 @@ from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiError
 from demostudent.db import MetricsDb
 from demostudent.logs import LOGGER_NAME
-from demostudent.orphans import findOrphanedDemoStudents
+from demostudent.orphans import (confirmCourseStates, findOrphansFromInventory,
+                                 scanDemoStudents)
 
 LIVE_COURSE = 300
 DELETED_COURSE = 302
@@ -35,16 +40,20 @@ class StandInD2l:
     """Enough of the D2L client for one scan, with no network calls."""
 
     def __init__(self):
-        self.liveCourseIds = [LIVE_COURSE]
+        self.users = [
+            {"UserId": 9300, "UserName": "demo.300", "Activation": {"IsActive": True}},
+            {"UserId": 9302, "UserName": "demo.302", "Activation": {"IsActive": True}},
+            {"UserId": 9303, "UserName": "demo.303", "Activation": {"IsActive": True}},
+            {"UserId": 42, "UserName": "demo.legacy", "Activation": {"IsActive": True}},
+            {"UserId": 1, "UserName": "jsmith", "Activation": {"IsActive": True}},
+        ]
 
-    def iterDescendants(self, orgUnitId, ouTypeId):
-        """Discovery: only the live course comes back, the way D2L reports it."""
-        for courseId in self.liveCourseIds:
-            yield {"Identifier": str(courseId), "Name": f"Course {courseId}",
-                   "Code": f"C{courseId}"}
+    def iterUsers(self):
+        """The user listing, the way D2L pages it."""
+        yield from self.users
 
     def getOrgUnit(self, orgUnitId):
-        """Confirmation: 404 for the deleted course, 403 for the hidden one."""
+        """404 for the deleted course, 403 for the one that is hidden."""
         if orgUnitId == DELETED_COURSE:
             raise D2lApiError("Resource Not Found", httpStatus=404)
         if orgUnitId == HIDDEN_COURSE:
@@ -52,13 +61,9 @@ class StandInD2l:
         return {"Identifier": str(orgUnitId), "Name": f"Course {orgUnitId}",
                 "Code": f"C{orgUnitId}", "Type": {"Id": 3}}
 
-    def getUserByUsername(self, userName):
-        """User lookup, used for rows that carry no stored user id."""
-        return {"UserId": 9000 + int(userName.split(".")[1]), "UserName": userName}
-
 
 def main() -> None:
-    """Run one scan against the stand-in and print what it found."""
+    """Run both detection passes against the stand-in and print the result."""
     # No log file is set up here, so silence the application logger rather
     # than letting it fall back to stderr and interleave with the output.
     logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
@@ -72,27 +77,21 @@ def main() -> None:
             workingDir=Path(tempDir),
         )
         db = MetricsDb(config.dbPath)
+        api = StandInD2l()
         try:
-            runId = db.startRun()
-            for orgUnitId in (LIVE_COURSE, DELETED_COURSE, HIDDEN_COURSE):
-                db.markCourseCompleted(
-                    orgUnitId=orgUnitId, courseName=f"Course {orgUnitId}",
-                    courseCode=f"C{orgUnitId}", userName=f"demo.{orgUnitId}",
-                    userId=9000 + orgUnitId, runId=runId,
-                )
-
-            report = findOrphanedDemoStudents(StandInD2l(), config, db)
+            scanResult = scanDemoStudents(api, config, db)
+            stateResult = confirmCourseStates(api, db)
+            orphans = findOrphansFromInventory(db)
 
             print("\nResult")
-            for orphan in report.orphans:
+            for orphan in orphans:
                 print(f"  orphaned:      {orphan.userName} "
                       f"(course {orphan.orgUnitId} was deleted)")
-            for orgUnitId in report.unreachable:
-                print(f"  unconfirmable: course {orgUnitId} could not be checked, "
-                      f"so its demo student was left alone")
-            print(f"\n  {len(report.orphans)} orphaned, "
-                  f"{len(report.unreachable)} unconfirmable, "
-                  f"of {report.completedCourseCount} completed courses.")
+            print(f"  live:          {stateResult.live} course(s) still exist")
+            print(f"  unconfirmable: {stateResult.unknown} course(s) could not be "
+                  f"checked, so their demo students were left alone")
+            print(f"  unparsed:      {len(scanResult.unparsed)} account(s) match the "
+                  f"prefix but carry no org unit id")
             print("\n  delete-orphans would deactivate only the orphaned one.")
         finally:
             db.close()

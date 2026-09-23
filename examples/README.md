@@ -5,7 +5,7 @@ credentials needed, and nothing is changed.
 
 | Example | What it shows |
 | --- | --- |
-| `findOrphanedDemoStudents.py` | Scanning for demo students whose course offering was deleted, and why a course the service account cannot see is never treated as one |
+| `findOrphanedDemoStudents.py` | Both detection passes: reading demo students out of D2L, then confirming which of their courses are gone. Shows why a course the service account cannot see is never treated as deleted |
 
 Run one with:
 

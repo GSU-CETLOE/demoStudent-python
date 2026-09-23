@@ -100,6 +100,7 @@ scopes:
 | `GET /lp/{v}/orgstructure/{ou}` | `organizations:organization:read` |
 | `GET /lp/{v}/orgstructure/{ou}/descendants/paged/` | `organizations:organization:read` |
 | `GET /lp/{v}/users/?userName=` | `users:userdata:read` |
+| `GET /lp/{v}/users/` (paged, all users) | `users:userdata:read` |
 | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` | `enrollment:orgunit:read` |
 | `POST /lp/{v}/users/` | `users:userdata:create` |
 | `POST /lp/{v}/enrollments/` | `enrollment:orgunit:create` |
@@ -149,6 +150,7 @@ Names below are as they appear in Brightspace and are grouped by tool.
 | --- | --- | --- | --- |
 | Users | **Enroll '{demo student role}'** | Course Offering | `POST /lp/{v}/enrollments/` — enrolling the demo student |
 | Users | **Search for '{demo student role}'** | Organization, Course Offering | `GET /lp/{v}/users/?userName=` — finding `demo.{orgUnitId}` |
+| User Information Privacy | **See Usernames** | Organization | `GET /lp/{v}/users/`, without which the orphan scan matches nothing and reports a clean empty result |
 | Users | **View User Enrollments** | Organization, Semester, Course Template, Course Offering, Department | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` — the enrollment check |
 | Users | **Create a User in the Database** | Organization | `POST /lp/{v}/users/` — creating the demo student |
 | Users | View the Users' Email Address, View Users' Contact Information | Organization | the `ExternalEmail` set on creation |
@@ -356,34 +358,45 @@ skipped until they age out of the one-year retention window (see
 
 Reports demo students whose course offering no longer exists. When a
 course is deleted, its `demo.{orgUnitId}` user stays behind with nothing
-to belong to. Read-only: nothing in D2L or the database changes, so you
-can look at the list before anything acts on it.
+to belong to. Read-only against D2L.
 
 ```sh
-uv run demo-student find-orphans                       # scan the whole organization
-uv run demo-student find-orphans --out orphans.csv     # also write the list to CSV
-uv run demo-student find-orphans --ou-list 2469900     # scan specific org units only
+uv run demo-student find-orphans                    # report from the cached inventory
+uv run demo-student find-orphans --rescan           # re-read D2L's user list first
+uv run demo-student find-orphans --out orphans.csv  # also write the list to CSV
 ```
 
-Candidates come from diffing `completedCourses` against live discovery.
-That costs one discovery pass instead of a call per course, but the diff
-on its own is not evidence. Brightspace leaves org units the service
-account cannot reach out of listings entirely (see
-[Course Access Options](#course-access-options-easy-to-miss)), so a
-permissions gap would make thousands of live courses look deleted. Every
-candidate is therefore confirmed with a direct
-`GET /lp/{v}/orgstructure/{ou}`, and the response decides:
+#### How it finds them
+
+Two passes. The first walks D2L's user list and records every account
+named `{usernamePrefix}.{orgUnitId}` into a local `demoStudents` table.
+The second looks up each distinct course once and records whether it is
+live, deleted, or unconfirmable.
+
+The walk is the expensive half, so it runs only when the inventory is
+empty or `--rescan` asks for it. Course states are re-confirmed every
+time, because a course can be deleted long after its demo student was
+first seen.
+
+Reading the accounts from D2L rather than from `completedCourses` is the
+whole point of the design. That table is a skip list, pruned after a
+year, so a course deleted after its row aged out leaves nothing behind.
+The oldest demo students are the ones most likely to have lost their
+course, which is exactly the population a `completedCourses` scan cannot
+see. A demo student's username carries its own org unit id, so the
+inventory does not depend on what the database happens to remember.
+
+The verdict comes from the course lookup:
 
 | Response | Verdict |
 | --- | --- |
 | `404 Resource Not Found` | The course is gone. Its demo student is orphaned |
-| `403 Not Authorized` | The account cannot see the course, which is not the same as the course being deleted. Reported as unconfirmable and left alone |
-| Any other error | Proof of nothing. Reported as unconfirmable and left alone |
-| `200` | The course is alive; discovery simply missed it. Not an orphan |
+| `403 Not Authorized` | The account cannot see the course, which is not the same as the course being deleted. Left alone |
+| Any other error | Proof of nothing. Left alone |
+| `200` | The course is alive. Not an orphan |
 
-The summary counts what was left alone alongside what was found. A run
-that skipped a thousand courses should not be able to pass for a clean
-one.
+Only a 404 counts. Everything else leaves the course in the `unknown`
+state, and nothing acts on `unknown`.
 
 #### Unverified: courses in the recycle bin
 
@@ -407,42 +420,39 @@ alive is never judged orphaned. The worst case is that the command finds
 nothing.
 
 To check: delete a throwaway course that has a demo student, then run
-`find-orphans`. If the demo student does not show up, the org unit
-lookup is returning 200 for recycled courses, and detection would need
-to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.
+`find-orphans --rescan`. If the demo student does not show up, the org
+unit lookup is returning 200 for recycled courses, and detection would
+need to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.
 
-#### The candidate cap
+#### The scan refuses to run blind
 
-A scan aborts without confirming anything when the candidate set is both
-larger than 25 courses and above 5% of all completed courses. Exit code
-is 2, with the reason. A sudden mass orphaning is usually a broken
-service account rather than real deletions, and it is cheaper to catch
-that before making a few thousand confirmation calls than after.
+D2L filters its user listing by what the calling role may see, and
+withholds individual fields the same way, with nothing in the response to
+say so. A service account that cannot read usernames would match zero
+demo students and return a clean, well-formed, empty result that looks
+exactly like a tenant with nothing to clean up.
 
-Raise the threshold with `--max-candidate-ratio` when a genuinely large
-cleanup is expected, e.g. after a semester purge:
+The scan stops with exit code 2 when the first user comes back without a
+username, rather than walking the whole tenant to arrive at a false
+answer. Grant **See Usernames** under User Information Privacy and
+re-run.
 
-```sh
-uv run demo-student find-orphans --max-candidate-ratio 0.25   # allow up to 25%
-uv run demo-student find-orphans --max-candidate-ratio 1.0    # disable the check
-```
-
-Check the access requirements above before you raise it. A permissions
-gap is the failure this cap was put there for.
+Even so, treat the count as a floor rather than a census. If the number
+of demo students found is far below what you expect for the tenant, the
+service account is probably not seeing everything.
 
 ### `demo-student delete-orphans`
 
-Acts on what `find-orphans` reports. It runs the same scan itself rather
-than reading a saved list, so it never works from stale results, and it
-**deactivates** the orphaned demo students by default.
+Acts on what `find-orphans` reports, running the same two passes itself,
+and **deactivates** the orphaned demo students by default.
 
 ```sh
-uv run demo-student delete-orphans                        # report only; changes nothing
-uv run demo-student delete-orphans --confirm              # deactivate the orphans
+uv run demo-student delete-orphans                          # report only; changes nothing
+uv run demo-student delete-orphans --confirm                # deactivate the orphans
 uv run demo-student delete-orphans --confirm --hard-delete  # permanently delete them
 ```
 
-Without `--confirm` it reports and stops. Same command, same scan, so
+Without `--confirm` it reports and stops. Same command, same passes, so
 what you see in the report is what `--confirm` will act on.
 
 #### Why deactivation is the default
@@ -465,14 +475,23 @@ only an `IsActive` flag. The general user update route would also work,
 and is deliberately avoided: its request body replaces every field on
 the user.
 
-#### What happens to the database
+#### What happens to the inventory
 
-A demo student that is successfully deactivated or deleted has its
-`completedCourses` row removed, since the course that row recorded is
-gone. A user that fails keeps its row and stays on the books for a
-retry. Failures land in the `errors` table under the `deleteOrphan`
-phase, where `status --errors` will show them. One failure never stops
-the rest. The command exits 1 if any failed.
+A deactivated demo student is marked inactive and stays in the table, so
+later runs stop offering it. A hard-deleted one is dropped, since the
+account no longer exists in D2L. A user that fails keeps its row and its
+course state, so the next run offers it again. Failures land in the
+`errors` table under the `deleteOrphan` phase, where `status --errors`
+will show them. One failure never stops the rest. The command exits 1 if
+any failed.
+
+#### A caveat on matching
+
+Demo students are identified by username alone, because D2L's user
+listing carries no role field. An account someone created by hand named
+`demo.12345` would be treated as a demo student. Accounts that match the
+prefix but carry no usable org unit id, such as `demo.legacy`, are
+counted and reported rather than acted on.
 
 ### `demo-student status`
 
@@ -496,9 +515,12 @@ uv run demo-student import-legacy /path/to/demo_783_newuser_co.txt
 
 ## Database
 
-`working/db/demoStudent.db` (SQLite, WAL mode) with three tables:
+`working/db/demoStudent.db` (SQLite, WAL mode) with four tables:
 
 - `completedCourses` — org units that have their demo student; the skip list.
+- `demoStudents`, an inventory of demo student accounts that exist in D2L,
+  with the org unit each one names and what the last course lookup
+  concluded (`live`, `deleted`, or `unknown`).
 - `runs` — one row per run: timestamps, status, and counts (discovered,
   skipped, checked, users created, enrollments created, errors).
 - `errors` — individual failures with run id, org unit, phase, HTTP status,
@@ -507,7 +529,10 @@ uv run demo-student import-legacy /path/to/demo_783_newuser_co.txt
 Dashboards can read this file directly; the schema is stable.
 
 Retention: at the start of every run, rows older than one year are deleted
-from all three tables. If a pruned course ever reappears in discovery it is
+from `completedCourses`, `runs`, and `errors`. **`demoStudents` is exempt.**
+It inventories accounts that exist in D2L, and the oldest of those are the
+ones most likely to have lost their course; ageing them out would hide
+exactly the orphans the cleanup exists to find. If a pruned course ever reappears in discovery it is
 simply re-checked (found already enrolled) and re-recorded — nothing is
 enrolled twice. To re-verify sooner than a year, use `run --recheck` instead
 of waiting on retention or editing `completedCourses` by hand.

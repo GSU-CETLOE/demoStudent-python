@@ -277,8 +277,9 @@ def scanDemoStudents(
     logFunc(f"Walked {usersWalked} users; found {len(demoStudents)} demo students "
             f"({newlyRecorded} new to the inventory).")
     if unparsed:
-        logFunc(f"  {len(unparsed)} accounts match the '{config.usernamePrefix}.' prefix "
-                f"but carry no usable org unit id; left alone.")
+        noun = "account" if len(unparsed) == 1 else "accounts"
+        logFunc(f"  Left alone: {len(unparsed)} {noun} matching the "
+                f"'{config.usernamePrefix}.' prefix with no usable org unit id.")
     fileLogger.info(
         f"Demo student scan: walked {usersWalked} users, found {len(demoStudents)}, "
         f"{newlyRecorded} new, {len(unparsed)} unparsed")
