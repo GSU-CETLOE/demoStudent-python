@@ -32,6 +32,7 @@ USERS_PLUGIN = "22222222-2222-2222-2222-222222222222"
 def config(tmp_path):
     return AppConfig(
         host="example.brightspace.com",
+        proxyUrl="http://127.0.0.1:8080",
         clientId="client-id",
         clientSecret="client-secret",
         redirectUri="https://localhost:8443/callback",

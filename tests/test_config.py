@@ -6,6 +6,7 @@ from demostudent.config import AppConfig, ConfigError, loadConfig
 
 FULL_CONFIG = """
 host = "example.brightspace.com"
+proxyUrl = "http://127.0.0.1:8080"
 clientId = "my-client-id"
 clientSecret = "my-client-secret"
 redirectUri = "https://localhost:8443/callback"
@@ -25,6 +26,7 @@ logFilePrefix = "demoStudent"
 
 MINIMAL_CONFIG = """
 host = "example.brightspace.com"
+proxyUrl = "http://127.0.0.1:8080"
 clientId = "my-client-id"
 clientSecret = "my-client-secret"
 redirectUri = "https://localhost:8443/callback"
@@ -40,6 +42,7 @@ def writeConfig(tmp_path, content):
 def test_loadFullConfig(tmp_path):
     config = loadConfig(writeConfig(tmp_path, FULL_CONFIG))
     assert config.host == "example.brightspace.com"
+    assert config.proxyUrl == "http://127.0.0.1:8080"
     assert config.clientId == "my-client-id"
     assert config.clientSecret == "my-client-secret"
     assert config.redirectUri == "https://localhost:8443/callback"
@@ -102,6 +105,26 @@ def test_missingRequiredFieldRaises(tmp_path):
     content = MINIMAL_CONFIG.replace('host = "example.brightspace.com"\n', "")
     with pytest.raises(ConfigError, match="host"):
         loadConfig(writeConfig(tmp_path, content))
+
+
+def test_missingProxyUrlRaises(tmp_path):
+    """Every D2L call goes through the proxy, so there is nothing to fall back to."""
+    content = MINIMAL_CONFIG.replace('proxyUrl = "http://127.0.0.1:8080"\n', "")
+    with pytest.raises(ConfigError, match="proxyUrl"):
+        loadConfig(writeConfig(tmp_path, content))
+
+
+def test_proxyUrlWithoutSchemeRaises(tmp_path):
+    """host takes a bare name and proxyUrl a full URL; mixing them up is easy."""
+    content = MINIMAL_CONFIG.replace('"http://127.0.0.1:8080"', '"127.0.0.1:8080"')
+    with pytest.raises(ConfigError, match="proxyUrl"):
+        loadConfig(writeConfig(tmp_path, content))
+
+
+def test_proxyUrlTrailingSlashDropped(tmp_path):
+    content = MINIMAL_CONFIG.replace('"http://127.0.0.1:8080"', '"https://proxy.example.edu/d2l/"')
+    config = loadConfig(writeConfig(tmp_path, content))
+    assert config.proxyUrl == "https://proxy.example.edu/d2l"
 
 
 def test_missingClientSecretRaises(tmp_path, monkeypatch):
