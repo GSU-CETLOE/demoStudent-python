@@ -55,7 +55,17 @@ class D2lApiClient:
     # --- version negotiation ---
 
     def _negotiateVersions(self) -> None:
-        response = self._request("GET", "/d2l/api/versions/")
+        """Record the latest lp and le versions the tenant supports.
+
+        A failure here surfaces from whichever route asked first, so it
+        is re-raised without an HTTP status. Callers read a route's
+        status as that route's answer, and a 404 on getOrgUnit means the
+        course is deleted.
+        """
+        try:
+            response = self._request("GET", "/d2l/api/versions/")
+        except D2lApiError as error:
+            raise D2lApiError(f"Could not negotiate API versions: {error}") from error
         products = {entry["ProductCode"]: entry["LatestVersion"] for entry in response.json()}
         try:
             self._lpVersion = products["lp"]

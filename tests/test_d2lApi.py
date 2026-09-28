@@ -69,6 +69,21 @@ def test_versionsFetchedOnlyOnce(api):
 
 
 @respx.mock
+def test_failedVersionNegotiationCarriesNoStatusOfItsOwnRoute(api):
+    """A 404 on /versions/ must not read as the org unit being gone.
+
+    The orphan check treats a 404 from getOrgUnit as a deleted course.
+    If the negotiation's status leaked through, a wrong base URL would
+    mark every course deleted.
+    """
+    respx.get(f"{BASE}/d2l/api/versions/").mock(return_value=httpx.Response(404))
+    with pytest.raises(D2lApiError) as excInfo:
+        api.getOrgUnit(55)
+    assert excInfo.value.httpStatus is None
+    assert "versions" in str(excInfo.value)
+
+
+@respx.mock
 def test_getUserByUsernameFound(api):
     mockVersions()
     respx.get(f"{BASE}/d2l/api/lp/1.47/users/", params={"userName": "demo.123"}).mock(
