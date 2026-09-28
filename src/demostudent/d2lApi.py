@@ -1,9 +1,11 @@
 """Thread-safe D2L Brightspace API client.
 
-Every call goes through apiProxy2, which mirrors the tenant's /d2l/api at
-its own root: {proxyUrl}/lp/1.47/users/whoami reaches
-https://{host}/d2l/api/lp/1.47/users/whoami. The proxy runs in
-passthrough mode, so this client still sends its own bearer token.
+Calls go to https://{host}/d2l/api, or through apiProxy2 when proxyUrl is
+set. The proxy mirrors the tenant's /d2l/api at its own root, so
+{proxyUrl}/lp/1.47/users/whoami reaches
+https://{host}/d2l/api/lp/1.47/users/whoami, and route paths are the same
+either way. The proxy runs in passthrough mode, so this client sends its
+own bearer token in both.
 
 Wraps a shared httpx.Client (safe for concurrent use) and handles the
 cross-cutting concerns: bearer auth, one refresh-and-retry on 401,
@@ -54,8 +56,14 @@ class D2lApiClient:
     ):
         self._config = config
         self._tokenManager = tokenManager
-        self._proxyUrl = config.proxyUrl
         self._tenantApiUrl = f"https://{config.host}/d2l/api"
+        if config.proxyUrl:
+            self._apiBaseUrl = config.proxyUrl
+            self._unreachableMessage = (
+                f"Could not reach the API proxy at {config.proxyUrl}. Is apiProxy2 running?")
+        else:
+            self._apiBaseUrl = self._tenantApiUrl
+            self._unreachableMessage = f"Could not reach D2L at {self._tenantApiUrl}."
         self._http = httpClient or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
         self._sleepFunc = sleepFunc
         self._versionLock = threading.Lock()
@@ -109,12 +117,13 @@ class D2lApiClient:
         allowNotFound: bool = False,
         allowRedirect: bool = False,
     ) -> httpx.Response:
-        """Issue a request through the proxy with auth, 401 refresh-retry, and 429 backoff.
+        """Issue a request with auth, 401 refresh-retry, and 429 backoff.
 
         Every request asks the proxy not to cache. This tool decides what
         to create, enroll, deactivate or delete from what it reads, and
         the proxy would otherwise answer a read with a copy up to minutes
-        old.
+        old. The header goes out in direct mode too: the proxy forwards
+        it to D2L anyway, so D2L sees the same request either way.
         """
         accessToken = self._tokenManager.getAccessToken()
         refreshed = False
@@ -123,16 +132,14 @@ class D2lApiClient:
             try:
                 response = self._http.request(
                     method,
-                    f"{self._proxyUrl}{path}",
+                    f"{self._apiBaseUrl}{path}",
                     json=json,
                     params=params,
                     headers={"Authorization": f"Bearer {accessToken}",
                              "Cache-Control": "no-cache"},
                 )
             except httpx.ConnectError as error:
-                raise D2lUnavailableError(
-                    f"Could not reach the API proxy at {self._proxyUrl}. "
-                    f"Is apiProxy2 running? ({error})") from error
+                raise D2lUnavailableError(f"{self._unreachableMessage} ({error})") from error
             if response.status_code == 401 and not refreshed:
                 accessToken = self._tokenManager.handleUnauthorized(accessToken)
                 refreshed = True
@@ -154,11 +161,13 @@ class D2lApiClient:
             )
 
     def _apiPath(self, link: str) -> str:
-        """The part of a D2L API link after /d2l/api, to request through the proxy.
+        """The part of a D2L API link after /d2l/api, as a route path.
 
         Data Sets responses carry absolute links on the tenant, and the
-        proxy relays bodies unchanged. The proxy reaches only the tenant,
-        so a link anywhere else cannot be followed through it.
+        proxy relays bodies unchanged, so the link is cut back to a path
+        and joined to whichever base this client uses. A link anywhere
+        else is refused: the proxy reaches only the tenant, and neither
+        mode should send the bearer token somewhere nobody configured.
         """
         if not link.startswith(f"{self._tenantApiUrl}/"):
             raise D2lApiError(
@@ -320,9 +329,10 @@ class D2lApiClient:
         redirect is handled here rather than by httpx so the header can
         be dropped on the cross-host hop.
 
-        The proxy relays D2L's redirect without following it, and the
-        storage hop goes straight to storage. It is the one request here
-        that bypasses the proxy, because it is not a D2L API call.
+        Through the proxy, the proxy relays D2L's redirect without
+        following it, and the storage hop still goes straight to storage.
+        It is the one request here that bypasses the proxy, because it is
+        not a D2L API call.
         """
         path = self._apiPath(downloadLink)
         target.parent.mkdir(parents=True, exist_ok=True)

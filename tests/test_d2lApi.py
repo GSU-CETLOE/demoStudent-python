@@ -11,6 +11,7 @@ from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiClient, D2lApiError, D2lUnavailableError
 
 PROXY = "http://127.0.0.1:8080"
+TENANT_API = "https://example.brightspace.com/d2l/api"
 
 VERSIONS_RESPONSE = [
     {"ProductCode": "bas", "LatestVersion": "1.1", "SupportedVersions": ["1.0", "1.1"]},
@@ -36,6 +37,19 @@ def api(config):
     store = TokenStore(config.tokenPath)
     store.save(TokenSet(accessToken="valid-token", refreshToken="r", expiresAt=time.time() + 3600))
     client = D2lApiClient(config, TokenManager(config, store), sleepFunc=lambda _seconds: None)
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def directApi(config):
+    """A client configured without proxyUrl, so it calls D2L itself."""
+    from dataclasses import replace
+    directConfig = replace(config, proxyUrl=None)
+    store = TokenStore(directConfig.tokenPath)
+    store.save(TokenSet(accessToken="valid-token", refreshToken="r", expiresAt=time.time() + 3600))
+    client = D2lApiClient(directConfig, TokenManager(directConfig, store),
+                          sleepFunc=lambda _seconds: None)
     yield client
     client.close()
 
@@ -67,6 +81,27 @@ def test_versionsFetchedOnlyOnce(api):
     api.whoAmI()
     api.whoAmI()
     assert versionsRoute.call_count == 1
+
+
+@respx.mock
+def test_withoutProxyUrlCallsD2lDirectly(directApi):
+    respx.get(f"{TENANT_API}/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    route = respx.get(f"{TENANT_API}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1"}))
+    directApi.whoAmI()
+    assert route.calls.last.request.headers["Authorization"] == "Bearer valid-token"
+
+
+@respx.mock
+def test_unreachableD2lIsNamedInTheError(directApi):
+    """Direct mode has no proxy to blame, so the message must not mention one."""
+    respx.get(f"{TENANT_API}/versions/").mock(
+        side_effect=httpx.ConnectError("Connection refused"))
+    with pytest.raises(D2lUnavailableError) as excInfo:
+        directApi.whoAmI()
+    assert TENANT_API in str(excInfo.value)
+    assert "apiProxy2" not in str(excInfo.value)
 
 
 @respx.mock

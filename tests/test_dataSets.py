@@ -52,6 +52,20 @@ def api(config):
     client.close()
 
 
+@pytest.fixture
+def directApi(config):
+    """A client configured without proxyUrl, so it calls D2L itself."""
+    from dataclasses import replace
+    directConfig = replace(config, proxyUrl=None)
+    store = TokenStore(directConfig.tokenPath)
+    store.save(TokenSet(accessToken="valid-token", refreshToken="r",
+                        expiresAt=time.time() + 3600))
+    client = D2lApiClient(directConfig, TokenManager(directConfig, store),
+                          sleepFunc=lambda _seconds: None)
+    yield client
+    client.close()
+
+
 def mockVersions():
     return respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
@@ -118,6 +132,29 @@ def test_findDataSetFollowsPagination(api):
     assert route.call_count == 2
     # D2L's Next link names the tenant; it is requested through the proxy.
     assert route.calls[1].request.url == httpx.URL(f"{PROXY}/lp/1.47/datasets/bds?page=2")
+
+
+@respx.mock
+def test_directModeFollowsTheNextLinkAsGiven(directApi):
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    route = respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds")
+    route.side_effect = [
+        httpx.Response(200, json=dataSetListPage(
+            [], next_=f"{BASE}/d2l/api/lp/1.47/datasets/bds?page=2")),
+        httpx.Response(200, json=dataSetListPage([usersDataSet()])),
+    ]
+    assert directApi.findDataSet("Users") is not None
+    assert route.calls[1].request.url == httpx.URL(f"{BASE}/d2l/api/lp/1.47/datasets/bds?page=2")
+
+
+@respx.mock
+def test_directModeDownloadsFromTheLinkAsGiven(directApi, tmp_path):
+    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/download").mock(
+        return_value=httpx.Response(200, content=usersCsvZip(["1,demo.301,,D,,S,1,,,,783,"])))
+    target = tmp_path / "users.zip"
+    directApi.downloadExtract(f"{BASE}/d2l/api/lp/1.47/datasets/bds/download", target)
+    assert target.is_file()
 
 
 @respx.mock

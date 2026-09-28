@@ -4,9 +4,9 @@ Reads a TOML config file (see config.example.toml), applies defaults,
 and allows the client secret to be overridden via the
 DEMO_STUDENT_CLIENT_SECRET environment variable.
 
-Every D2L API call goes through apiProxy2 at proxyUrl. host still names
-the tenant: OAuth is issued for it, and D2L's own absolute links point
-at it.
+D2L API calls go through apiProxy2 when proxyUrl is set, and straight
+to https://{host}/d2l/api when it is not. host names the tenant either
+way: OAuth is issued for it, and D2L's own absolute links point at it.
 """
 
 import os
@@ -31,11 +31,11 @@ class AppConfig:
     """All runtime settings for the application."""
 
     host: str
-    proxyUrl: str
     clientId: str
     clientSecret: str
     redirectUri: str
     workingDir: Path
+    proxyUrl: str | None = None
     scope: str = "core:*:*"
     roleId: int = 783
     orgOu: int = 1070555
@@ -91,18 +91,20 @@ def loadConfig(configPath: Path | str) -> AppConfig:
     if envSecret:
         raw["clientSecret"] = envSecret
 
-    missing = [key for key in ("host", "proxyUrl", "clientId", "clientSecret", "redirectUri")
-               if not raw.get(key)]
+    missing = [key for key in ("host", "clientId", "clientSecret", "redirectUri") if not raw.get(key)]
     if missing:
         raise ConfigError(
             f"Missing required config values: {', '.join(missing)} "
             f"(clientSecret may also be set via {CLIENT_SECRET_ENV_VAR})"
         )
 
-    if not raw["proxyUrl"].startswith(("http://", "https://")):
-        raise ConfigError(
-            f"proxyUrl must start with http:// or https://, got {raw['proxyUrl']!r}")
-    raw["proxyUrl"] = raw["proxyUrl"].rstrip("/")
+    if raw.get("proxyUrl"):
+        if not raw["proxyUrl"].startswith(("http://", "https://")):
+            raise ConfigError(
+                f"proxyUrl must start with http:// or https://, got {raw['proxyUrl']!r}")
+        raw["proxyUrl"] = raw["proxyUrl"].rstrip("/")
+    else:
+        raw["proxyUrl"] = None
 
     workingDir = Path(raw.pop("workingDir", "working"))
     if not workingDir.is_absolute():

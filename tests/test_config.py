@@ -26,7 +26,6 @@ logFilePrefix = "demoStudent"
 
 MINIMAL_CONFIG = """
 host = "example.brightspace.com"
-proxyUrl = "http://127.0.0.1:8080"
 clientId = "my-client-id"
 clientSecret = "my-client-secret"
 redirectUri = "https://localhost:8443/callback"
@@ -107,22 +106,27 @@ def test_missingRequiredFieldRaises(tmp_path):
         loadConfig(writeConfig(tmp_path, content))
 
 
-def test_missingProxyUrlRaises(tmp_path):
-    """Every D2L call goes through the proxy, so there is nothing to fall back to."""
-    content = MINIMAL_CONFIG.replace('proxyUrl = "http://127.0.0.1:8080"\n', "")
-    with pytest.raises(ConfigError, match="proxyUrl"):
-        loadConfig(writeConfig(tmp_path, content))
+def test_proxyUrlIsOptional(tmp_path):
+    """Without it the tool calls D2L directly."""
+    config = loadConfig(writeConfig(tmp_path, MINIMAL_CONFIG))
+    assert config.proxyUrl is None
+
+
+def test_emptyProxyUrlMeansDirect(tmp_path):
+    """An emptied value reads as unset rather than as a URL with no host."""
+    config = loadConfig(writeConfig(tmp_path, MINIMAL_CONFIG + 'proxyUrl = ""\n'))
+    assert config.proxyUrl is None
 
 
 def test_proxyUrlWithoutSchemeRaises(tmp_path):
     """host takes a bare name and proxyUrl a full URL; mixing them up is easy."""
-    content = MINIMAL_CONFIG.replace('"http://127.0.0.1:8080"', '"127.0.0.1:8080"')
+    content = MINIMAL_CONFIG + 'proxyUrl = "127.0.0.1:8080"\n'
     with pytest.raises(ConfigError, match="proxyUrl"):
         loadConfig(writeConfig(tmp_path, content))
 
 
 def test_proxyUrlTrailingSlashDropped(tmp_path):
-    content = MINIMAL_CONFIG.replace('"http://127.0.0.1:8080"', '"https://proxy.example.edu/d2l/"')
+    content = MINIMAL_CONFIG + 'proxyUrl = "https://proxy.example.edu/d2l/"\n'
     config = loadConfig(writeConfig(tmp_path, content))
     assert config.proxyUrl == "https://proxy.example.edu/d2l"
 
