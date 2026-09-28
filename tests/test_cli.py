@@ -12,6 +12,7 @@ from demostudent.auth import AUTHORIZATION_URL, TOKEN_URL, TokenSet, TokenStore
 from demostudent.cli import main
 
 BASE = "https://example.brightspace.com"
+PROXY = "http://127.0.0.1:8080"
 
 VERSIONS_RESPONSE = [
     {"ProductCode": "lp", "LatestVersion": "1.47", "SupportedVersions": ["1.47"]},
@@ -47,10 +48,10 @@ def storedTokens(tmp_path):
 
 
 def mockDiscovery(courseIds):
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
-    respx.get(f"{BASE}/d2l/api/lp/1.47/orgstructure/1070555/descendants/paged/").mock(
+    respx.get(f"{PROXY}/lp/1.47/orgstructure/1070555/descendants/paged/").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -66,7 +67,7 @@ def mockDiscovery(courseIds):
 
 
 def mockCourseWork():
-    respx.get(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\?userName=.*").mock(
+    respx.get(url__regex=rf"{PROXY}/lp/1\.47/users/\?userName=.*").mock(
         return_value=httpx.Response(404)
     )
     userIds = iter(range(9001, 9999))
@@ -76,8 +77,8 @@ def mockCourseWork():
         return httpx.Response(200, json={"UserId": next(userIds),
                                          "UserName": body["UserName"]})
 
-    respx.post(f"{BASE}/d2l/api/lp/1.47/users/").mock(side_effect=createUser)
-    respx.post(f"{BASE}/d2l/api/lp/1.47/enrollments/").mock(
+    respx.post(f"{PROXY}/lp/1.47/users/").mock(side_effect=createUser)
+    respx.post(f"{PROXY}/lp/1.47/enrollments/").mock(
         return_value=httpx.Response(200, json={})
     )
 
@@ -131,7 +132,7 @@ def test_runCommandRecheckReprocessesCompletedCourses(configPath, storedTokens, 
 @respx.mock
 def test_runCommandDryRun(configPath, storedTokens, capsys):
     mockDiscovery([301])
-    respx.get(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\?userName=.*").mock(
+    respx.get(url__regex=rf"{PROXY}/lp/1\.47/users/\?userName=.*").mock(
         return_value=httpx.Response(404)
     )
     exitCode = main(["--config", str(configPath), "run", "--dry-run"])
@@ -142,10 +143,10 @@ def test_runCommandDryRun(configPath, storedTokens, capsys):
 @respx.mock
 def test_runErrorsAreWrittenToLogFile(configPath, storedTokens, tmp_path, capsys):
     mockDiscovery([301])
-    respx.get(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\?userName=.*").mock(
+    respx.get(url__regex=rf"{PROXY}/lp/1\.47/users/\?userName=.*").mock(
         return_value=httpx.Response(404)
     )
-    respx.post(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    respx.post(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(500, text="server exploded")
     )
 
@@ -221,10 +222,10 @@ def test_statusShowsRunsAndErrors(configPath, storedTokens, capsys):
 
 @respx.mock
 def test_whoamiShowsAuthenticatedIdentity(configPath, storedTokens, capsys):
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         return_value=httpx.Response(
             200,
             json={"Identifier": "1234", "FirstName": "Api", "LastName": "User",
@@ -277,10 +278,10 @@ def test_authManualCommand(configPath, capsys, monkeypatch, tmp_path):
                   "expires_in": 3600, "token_type": "Bearer"},
         )
     )
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         return_value=httpx.Response(200, json={"FirstName": "Api", "LastName": "User"})
     )
 
@@ -303,7 +304,7 @@ def test_authManualCommand(configPath, capsys, monkeypatch, tmp_path):
 
 def mockOrgUnit(orgUnitId, status=200):
     """Org structure lookup for one course: 200 live, 404 deleted, 403 hidden."""
-    url = f"{BASE}/d2l/api/lp/1.47/orgstructure/{orgUnitId}"
+    url = f"{PROXY}/lp/1.47/orgstructure/{orgUnitId}"
     if status == 200:
         return respx.get(url).mock(return_value=httpx.Response(
             200, json={"Identifier": str(orgUnitId), "Name": f"Course {orgUnitId}",
@@ -314,16 +315,16 @@ def mockOrgUnit(orgUnitId, status=200):
 
 def mockNoDataSets():
     """Data Sets unavailable, so the scan falls back to the live API."""
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
 
 
 def mockUserWalk(users):
     """GET /users/ returning one page of User.UserData entries."""
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
     mockNoDataSets()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
             "Items": [
@@ -375,7 +376,7 @@ def test_findOrphansReusesTheInventoryWithoutRescan(configPath, storedTokens, ca
     assert main(["--config", str(configPath), "find-orphans"]) == 0
     capsys.readouterr()
 
-    walkRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    walkRoute = respx.get(f"{PROXY}/lp/1.47/users/")
     walkRoute.reset()
     assert main(["--config", str(configPath), "find-orphans"]) == 0
     assert not walkRoute.called  # the cached inventory was used
@@ -396,10 +397,10 @@ def test_findOrphansRescanWalksAgain(configPath, storedTokens, capsys):
 @respx.mock
 def test_findOrphansAbortsWhenUsernamesAreHidden(configPath, storedTokens, capsys):
     """An under-permissioned role would otherwise report a clean empty tenant."""
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
     mockNoDataSets()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
             "Items": [{"UserId": 9301, "Activation": {"IsActive": True}}],
@@ -450,7 +451,7 @@ def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
     activationRoute = respx.put(
-        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation")
+        url__regex=rf"{PROXY}/lp/1\.47/users/\d+/activation")
 
     assert main(["--config", str(configPath), "delete-orphans"]) == 0
     assert not activationRoute.called
@@ -463,9 +464,9 @@ def test_deleteOrphansRequiresConfirmFlag(configPath, storedTokens, capsys):
 def test_deleteOrphansWithConfirmDeactivatesByDefault(configPath, storedTokens, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    deleteRoute = respx.delete(url__regex=rf"{PROXY}/lp/1\.47/users/\d+")
     activationRoute = respx.put(
-        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
+        url__regex=rf"{PROXY}/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(200))
 
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
@@ -479,7 +480,7 @@ def test_deleteOrphansWithConfirmDeactivatesByDefault(configPath, storedTokens, 
 def test_deleteOrphansHardDeleteRemovesTheUser(configPath, storedTokens, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+").mock(
+    deleteRoute = respx.delete(url__regex=rf"{PROXY}/lp/1\.47/users/\d+").mock(
         return_value=httpx.Response(200))
 
     assert main(["--config", str(configPath), "delete-orphans",
@@ -495,7 +496,7 @@ def test_deactivatedOrphanIsNotOfferedAgain(configPath, storedTokens, capsys):
     """Once retired, an account should stop appearing in every later run."""
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
+    respx.put(url__regex=rf"{PROXY}/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(200))
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     capsys.readouterr()
@@ -508,9 +509,9 @@ def test_deactivatedOrphanIsNotOfferedAgain(configPath, storedTokens, capsys):
 def test_deleteOrphansNeverActsOnAnUnconfirmableCourse(configPath, storedTokens, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=403)
-    deleteRoute = respx.delete(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+")
+    deleteRoute = respx.delete(url__regex=rf"{PROXY}/lp/1\.47/users/\d+")
     activationRoute = respx.put(
-        url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation")
+        url__regex=rf"{PROXY}/lp/1\.47/users/\d+/activation")
 
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 0
     assert not deleteRoute.called
@@ -522,7 +523,7 @@ def test_deleteOrphansNeverActsOnAnUnconfirmableCourse(configPath, storedTokens,
 def test_deleteOrphansReportsFailureAndExitsOne(configPath, storedTokens, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    respx.put(url__regex=rf"{BASE}/d2l/api/lp/1\.47/users/\d+/activation").mock(
+    respx.put(url__regex=rf"{PROXY}/lp/1\.47/users/\d+/activation").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
 
     assert main(["--config", str(configPath), "delete-orphans", "--confirm"]) == 1
@@ -534,11 +535,11 @@ def mockDataSetsUsers(rows):
     import io
     import zipfile
 
-    respx.get(f"{BASE}/d2l/api/versions/").mock(
+    respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
     schemaId = "11111111-1111-1111-1111-111111111111"
     pluginId = "22222222-2222-2222-2222-222222222222"
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
         return_value=httpx.Response(200, json={"Objects": [{
             "SchemaId": schemaId,
             "Full": {"PluginId": pluginId, "Name": "Users",
@@ -546,7 +547,7 @@ def mockDataSetsUsers(rows):
             "Differential": None, "ExtractsLink": "",
         }], "Next": None}))
     respx.get(
-        f"{BASE}/d2l/api/lp/1.47/datasets/bds/{schemaId}/plugins/{pluginId}/extracts"
+        f"{PROXY}/lp/1.47/datasets/bds/{schemaId}/plugins/{pluginId}/extracts"
     ).mock(return_value=httpx.Response(200, json={"Objects": [{
         "SchemaId": schemaId, "PluginId": pluginId, "BdsType": "Full",
         "CreatedDate": "2026-09-15T03:00:00.000Z", "DownloadSize": 100,
@@ -558,7 +559,7 @@ def mockDataSetsUsers(rows):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("Users.csv", "\n".join([header] + rows))
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/dl").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds/dl").mock(
         return_value=httpx.Response(200, content=buffer.getvalue()))
 
 
@@ -570,7 +571,7 @@ def dataSetRow(userId, userName, orgRoleId="783"):
 def test_findOrphansPrefersDataSetsOverTheApiWalk(configPath, storedTokens, capsys):
     mockDataSetsUsers([dataSetRow(9302, "demo.302")])
     mockOrgUnit(302, status=404)
-    walkRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    walkRoute = respx.get(f"{PROXY}/lp/1.47/users/")
 
     assert main(["--config", str(configPath), "find-orphans"]) == 0
     assert not walkRoute.called
@@ -598,9 +599,9 @@ def test_dataSetsScanRequiresTheDemoStudentRole(configPath, storedTokens, capsys
 @respx.mock
 def test_apiWalkFlagSkipsDataSets(configPath, storedTokens, capsys):
     mockDataSetsUsers([dataSetRow(9302, "demo.302")])
-    dataSetRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds")
+    dataSetRoute = respx.get(f"{PROXY}/lp/1.47/datasets/bds")
     dataSetRoute.reset()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "end", "HasMoreItems": False},
             "Items": [{"UserId": 9302, "UserName": "demo.302",

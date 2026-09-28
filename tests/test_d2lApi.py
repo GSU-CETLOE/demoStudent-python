@@ -10,7 +10,7 @@ from demostudent.auth import TOKEN_URL, TokenManager, TokenSet, TokenStore
 from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiClient, D2lApiError
 
-BASE = "https://example.brightspace.com"
+PROXY = "http://127.0.0.1:8080"
 
 VERSIONS_RESPONSE = [
     {"ProductCode": "bas", "LatestVersion": "1.1", "SupportedVersions": ["1.0", "1.1"]},
@@ -41,7 +41,7 @@ def api(config):
 
 
 def mockVersions():
-    return respx.get(f"{BASE}/d2l/api/versions/").mock(
+    return respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
 
@@ -49,7 +49,7 @@ def mockVersions():
 @respx.mock
 def test_versionNegotiationUsesLatestSupported(api):
     mockVersions()
-    whoAmIRoute = respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    whoAmIRoute = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         return_value=httpx.Response(200, json={"Identifier": "1"})
     )
     api.whoAmI()
@@ -61,12 +61,38 @@ def test_versionNegotiationUsesLatestSupported(api):
 @respx.mock
 def test_versionsFetchedOnlyOnce(api):
     versionsRoute = mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         return_value=httpx.Response(200, json={"Identifier": "1"})
     )
     api.whoAmI()
     api.whoAmI()
     assert versionsRoute.call_count == 1
+
+
+@respx.mock
+def test_everyRequestAsksTheProxyNotToCache(api):
+    """Writes are decided from reads, so a cached read could act on stale state."""
+    versionsRoute = mockVersions()
+    readRoute = respx.get(f"{PROXY}/lp/1.47/orgstructure/55").mock(
+        return_value=httpx.Response(200, json={"Identifier": "55"}))
+    writeRoute = respx.put(f"{PROXY}/lp/1.47/users/9002/activation").mock(
+        return_value=httpx.Response(200))
+    api.getOrgUnit(55)
+    api.setUserActivation(9002, isActive=False)
+    for route in (versionsRoute, readRoute, writeRoute):
+        assert route.calls.last.request.headers["Cache-Control"] == "no-cache"
+
+
+@respx.mock
+def test_unreachableProxyIsNamedInTheError(api):
+    """Every call goes through the proxy, so a stopped proxy is the likeliest failure."""
+    mockVersions()
+    respx.get(f"{PROXY}/lp/1.47/orgstructure/55").mock(
+        side_effect=httpx.ConnectError("Connection refused"))
+    with pytest.raises(D2lApiError) as excInfo:
+        api.getOrgUnit(55)
+    assert PROXY in str(excInfo.value)
+    assert excInfo.value.httpStatus is None
 
 
 @respx.mock
@@ -77,7 +103,7 @@ def test_failedVersionNegotiationCarriesNoStatusOfItsOwnRoute(api):
     If the negotiation's status leaked through, a wrong base URL would
     mark every course deleted.
     """
-    respx.get(f"{BASE}/d2l/api/versions/").mock(return_value=httpx.Response(404))
+    respx.get(f"{PROXY}/versions/").mock(return_value=httpx.Response(404))
     with pytest.raises(D2lApiError) as excInfo:
         api.getOrgUnit(55)
     assert excInfo.value.httpStatus is None
@@ -87,7 +113,7 @@ def test_failedVersionNegotiationCarriesNoStatusOfItsOwnRoute(api):
 @respx.mock
 def test_getUserByUsernameFound(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/", params={"userName": "demo.123"}).mock(
+    respx.get(f"{PROXY}/lp/1.47/users/", params={"userName": "demo.123"}).mock(
         return_value=httpx.Response(200, json={"UserId": 9001, "UserName": "demo.123"})
     )
     user = api.getUserByUsername("demo.123")
@@ -98,7 +124,7 @@ def test_getUserByUsernameFound(api):
 @respx.mock
 def test_getUserByUsernameMissingReturnsNone(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/", params={"userName": "demo.404"}).mock(
+    respx.get(f"{PROXY}/lp/1.47/users/", params={"userName": "demo.404"}).mock(
         return_value=httpx.Response(404)
     )
     assert api.getUserByUsername("demo.404") is None
@@ -116,7 +142,7 @@ def enrollmentItem(orgUnitId: int, roleId: int) -> dict:
 @respx.mock
 def test_getEnrollmentMissingReturnsNone(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
+    respx.get(f"{PROXY}/lp/1.47/enrollments/users/9001/orgUnits/").mock(
         return_value=httpx.Response(404)
     )
     assert api.getEnrollment(55, 9001) is None
@@ -126,7 +152,7 @@ def test_getEnrollmentMissingReturnsNone(api):
 def test_getEnrollmentNotInThatOrgUnitReturnsNone(api):
     """The org-level enrollment every created user gets is not a course enrollment."""
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
+    respx.get(f"{PROXY}/lp/1.47/enrollments/users/9001/orgUnits/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "1070555", "HasMoreItems": False},
             "Items": [enrollmentItem(1070555, 783)],
@@ -138,7 +164,7 @@ def test_getEnrollmentNotInThatOrgUnitReturnsNone(api):
 @respx.mock
 def test_getEnrollmentFound(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/").mock(
+    respx.get(f"{PROXY}/lp/1.47/enrollments/users/9001/orgUnits/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "55", "HasMoreItems": False},
             "Items": [enrollmentItem(1070555, 783), enrollmentItem(55, 783)],
@@ -153,7 +179,7 @@ def test_getEnrollmentFound(api):
 @respx.mock
 def test_getEnrollmentFollowsPagingBookmarks(api):
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/enrollments/users/9001/orgUnits/")
+    route = respx.get(f"{PROXY}/lp/1.47/enrollments/users/9001/orgUnits/")
     route.side_effect = [
         httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "page1", "HasMoreItems": True},
@@ -173,7 +199,7 @@ def test_getEnrollmentFollowsPagingBookmarks(api):
 @respx.mock
 def test_createUserPostsExpectedBody(api, config):
     mockVersions()
-    route = respx.post(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    route = respx.post(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={"UserId": 9002, "UserName": "demo.55"})
     )
     user = api.createUser(
@@ -202,7 +228,7 @@ def test_createUserPostsExpectedBody(api, config):
 @respx.mock
 def test_enrollUserPostsExpectedBody(api):
     mockVersions()
-    route = respx.post(f"{BASE}/d2l/api/lp/1.47/enrollments/").mock(
+    route = respx.post(f"{PROXY}/lp/1.47/enrollments/").mock(
         return_value=httpx.Response(200, json={"OrgUnitId": 55, "UserId": 9002, "RoleId": 783})
     )
     api.enrollUser(orgUnitId=55, userId=9002, roleId=783)
@@ -214,7 +240,7 @@ def test_enrollUserPostsExpectedBody(api):
 @respx.mock
 def test_iterDescendantsFollowsBookmarks(api):
     mockVersions()
-    url = f"{BASE}/d2l/api/lp/1.47/orgstructure/201/descendants/paged/"
+    url = f"{PROXY}/lp/1.47/orgstructure/201/descendants/paged/"
     firstPage = httpx.Response(
         200,
         json={
@@ -257,7 +283,7 @@ def test_unauthorizedTriggersSingleRefreshAndRetry(config):
             return httpx.Response(200, json={"Identifier": "1"})
         return httpx.Response(401)
 
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(side_effect=whoAmIResponder)
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(side_effect=whoAmIResponder)
     assert api.whoAmI() == {"Identifier": "1"}
     assert route.call_count == 2
     api.close()
@@ -268,7 +294,7 @@ def test_rateLimitRetriesWithRetryAfter(api):
     mockVersions()
     sleeps = []
     api._sleepFunc = sleeps.append
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         side_effect=[
             httpx.Response(429, headers={"Retry-After": "7"}),
             httpx.Response(200, json={"Identifier": "1"}),
@@ -282,7 +308,7 @@ def test_rateLimitRetriesWithRetryAfter(api):
 @respx.mock
 def test_persistentServerErrorRaisesApiError(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+    respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
         return_value=httpx.Response(500, text="boom")
     )
     with pytest.raises(D2lApiError) as excInfo:
@@ -293,7 +319,7 @@ def test_persistentServerErrorRaisesApiError(api):
 @respx.mock
 def test_deleteUserCallsTheDeleteRoute(api):
     mockVersions()
-    route = respx.delete(f"{BASE}/d2l/api/lp/1.47/users/9002").mock(
+    route = respx.delete(f"{PROXY}/lp/1.47/users/9002").mock(
         return_value=httpx.Response(200)
     )
     api.deleteUser(9002)
@@ -303,7 +329,7 @@ def test_deleteUserCallsTheDeleteRoute(api):
 @respx.mock
 def test_deleteUserRaisesOnForbidden(api):
     mockVersions()
-    respx.delete(f"{BASE}/d2l/api/lp/1.47/users/9002").mock(
+    respx.delete(f"{PROXY}/lp/1.47/users/9002").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]})
     )
     with pytest.raises(D2lApiError) as excInfo:
@@ -315,7 +341,7 @@ def test_deleteUserRaisesOnForbidden(api):
 def test_setUserActivationSendsOnlyTheFlag(api):
     """The activation route takes one boolean; it never rewrites the record."""
     mockVersions()
-    route = respx.put(f"{BASE}/d2l/api/lp/1.47/users/9002/activation").mock(
+    route = respx.put(f"{PROXY}/lp/1.47/users/9002/activation").mock(
         return_value=httpx.Response(200)
     )
     api.setUserActivation(9002, isActive=False)
@@ -337,7 +363,7 @@ def userItem(userId, userName, isActive=True):
 @respx.mock
 def test_iterUsersFollowsPagingBookmarks(api):
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route = respx.get(f"{PROXY}/lp/1.47/users/")
     route.side_effect = [
         httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "9002", "HasMoreItems": True},
@@ -359,7 +385,7 @@ def test_iterUsersFollowsPagingBookmarks(api):
 def test_iterUsersFirstPageSendsNoBookmark(api):
     """A bookmark is the only parameter; userName would outrank it and break paging."""
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    route = respx.get(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "9001", "HasMoreItems": False},
             "Items": [userItem(9001, "demo.301")],
@@ -374,7 +400,7 @@ def test_iterUsersFirstPageSendsNoBookmark(api):
 def test_iterUsersStopsOnEmptyFinalPage(api):
     """The end may arrive as an empty page rather than a flag on a full one."""
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route = respx.get(f"{PROXY}/lp/1.47/users/")
     route.side_effect = [
         httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "9001", "HasMoreItems": True},
@@ -394,7 +420,7 @@ def test_iterUsersStopsOnEmptyFinalPage(api):
 def test_iterUsersStopsWhenBookmarkDoesNotAdvance(api):
     """A repeated bookmark would otherwise loop forever over one page."""
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/")
+    route = respx.get(f"{PROXY}/lp/1.47/users/")
     route.side_effect = [
         httpx.Response(200, json={
             "PagingInfo": {"Bookmark": "stuck", "HasMoreItems": True},
@@ -416,7 +442,7 @@ def test_iterUsersStopsWhenBookmarkDoesNotAdvance(api):
 def test_iterUsersStopsOnMissingBookmark(api):
     """HasMoreItems true with no bookmark leaves nowhere to go."""
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/users/").mock(
+    route = respx.get(f"{PROXY}/lp/1.47/users/").mock(
         return_value=httpx.Response(200, json={
             "PagingInfo": {"HasMoreItems": True},
             "Items": [userItem(9001, "demo.301")],

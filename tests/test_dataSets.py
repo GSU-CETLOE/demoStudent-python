@@ -18,6 +18,7 @@ from demostudent.config import AppConfig
 from demostudent.d2lApi import D2lApiClient, D2lApiError
 
 BASE = "https://example.brightspace.com"
+PROXY = "http://127.0.0.1:8080"
 
 VERSIONS_RESPONSE = [
     {"ProductCode": "lp", "LatestVersion": "1.47", "SupportedVersions": ["1.47"]},
@@ -52,7 +53,7 @@ def api(config):
 
 
 def mockVersions():
-    return respx.get(f"{BASE}/d2l/api/versions/").mock(
+    return respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
 
 
@@ -86,7 +87,7 @@ def usersCsvZip(rows):
 @respx.mock
 def test_findsTheUsersDataSetByName(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
         return_value=httpx.Response(200, json=dataSetListPage([
             {"SchemaId": "other", "Full": {"PluginId": "p", "Name": "Enrollments",
                                            "Description": "", "ExtractsLink": ""},
@@ -103,7 +104,7 @@ def test_findsTheUsersDataSetByName(api):
 @respx.mock
 def test_findDataSetFollowsPagination(api):
     mockVersions()
-    route = respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds")
+    route = respx.get(f"{PROXY}/lp/1.47/datasets/bds")
     route.side_effect = [
         httpx.Response(200, json=dataSetListPage(
             [{"SchemaId": "other", "Full": {"PluginId": "p", "Name": "Grades",
@@ -115,12 +116,25 @@ def test_findDataSetFollowsPagination(api):
     dataSet = api.findDataSet("Users")
     assert dataSet is not None
     assert route.call_count == 2
+    # D2L's Next link names the tenant; it is requested through the proxy.
+    assert route.calls[1].request.url == httpx.URL(f"{PROXY}/lp/1.47/datasets/bds?page=2")
+
+
+@respx.mock
+def test_nextLinkOffTheTenantIsRefused(api):
+    """The proxy reaches only the tenant, so a link anywhere else cannot be followed."""
+    mockVersions()
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
+        return_value=httpx.Response(200, json=dataSetListPage(
+            [], next_="https://elsewhere.example.net/d2l/api/lp/1.47/datasets/bds?page=2")))
+    with pytest.raises(D2lApiError, match="elsewhere.example.net"):
+        api.findDataSet("Users")
 
 
 @respx.mock
 def test_findDataSetReturnsNoneWhenAbsent(api):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
         return_value=httpx.Response(200, json=dataSetListPage([])))
     assert api.findDataSet("Users") is None
 
@@ -129,7 +143,7 @@ def test_findDataSetReturnsNoneWhenAbsent(api):
 def test_findDataSetReturnsNoneWhenNotProvisioned(api):
     """D2L answers 403 whether the tool is off, the role lacks it, or the scope is missing."""
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds").mock(
         return_value=httpx.Response(403, json={"Errors": [{"Message": "Not Authorized"}]}))
     assert api.findDataSet("Users") is None
 
@@ -139,7 +153,7 @@ def test_latestExtractPicksTheNewest(api):
     """D2L keeps an older extract around for up to 14 days after a new one."""
     mockVersions()
     respx.get(
-        f"{BASE}/d2l/api/lp/1.47/datasets/bds/{USERS_SCHEMA}/plugins/{USERS_PLUGIN}/extracts"
+        f"{PROXY}/lp/1.47/datasets/bds/{USERS_SCHEMA}/plugins/{USERS_PLUGIN}/extracts"
     ).mock(return_value=httpx.Response(200, json=dataSetListPage([
         {"SchemaId": USERS_SCHEMA, "PluginId": USERS_PLUGIN, "BdsType": "Full",
          "CreatedDate": "2026-09-08T03:00:00.000Z", "DownloadSize": 100,
@@ -159,7 +173,7 @@ def test_latestExtractPicksTheNewest(api):
 def test_latestExtractIgnoresDifferentials(api):
     mockVersions()
     respx.get(
-        f"{BASE}/d2l/api/lp/1.47/datasets/bds/{USERS_SCHEMA}/plugins/{USERS_PLUGIN}/extracts"
+        f"{PROXY}/lp/1.47/datasets/bds/{USERS_SCHEMA}/plugins/{USERS_PLUGIN}/extracts"
     ).mock(return_value=httpx.Response(200, json=dataSetListPage([
         {"SchemaId": USERS_SCHEMA, "PluginId": USERS_PLUGIN, "BdsType": "Differential",
          "CreatedDate": "2026-09-20T03:00:00.000Z", "DownloadSize": 10,
@@ -178,7 +192,7 @@ def test_latestExtractIgnoresDifferentials(api):
 def test_downloadFollowsRedirectWithoutTheAuthHeader(api, tmp_path):
     """D2L redirects to pre-authorized storage; sending the token there is wrong."""
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/download").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds/download").mock(
         return_value=httpx.Response(302, headers={"Location": "https://files.example.net/x.zip"}))
     storageRoute = respx.get("https://files.example.net/x.zip").mock(
         return_value=httpx.Response(200, content=usersCsvZip(["1,demo.301,,Demo,,Student,1,,,,783,"])))
@@ -194,7 +208,7 @@ def test_downloadFollowsRedirectWithoutTheAuthHeader(api, tmp_path):
 def test_downloadSendsAuthOnTheOriginalHost(api, tmp_path):
     """A same-host redirect is still D2L, so the token belongs on it."""
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/download").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds/download").mock(
         return_value=httpx.Response(200, content=usersCsvZip(["1,demo.301,,D,,S,1,,,,783,"])))
 
     target = tmp_path / "users.zip"
@@ -203,9 +217,18 @@ def test_downloadSendsAuthOnTheOriginalHost(api, tmp_path):
 
 
 @respx.mock
+def test_downloadLinkOffTheTenantIsRefused(api, tmp_path):
+    """No request is made; respx would fail the test on any unmocked call."""
+    with pytest.raises(D2lApiError, match="elsewhere.example.net"):
+        api.downloadExtract(
+            "https://elsewhere.example.net/d2l/api/lp/1.47/datasets/bds/download",
+            tmp_path / "users.zip")
+
+
+@respx.mock
 def test_downloadRaisesOnQuotaExhaustion(api, tmp_path):
     mockVersions()
-    respx.get(f"{BASE}/d2l/api/lp/1.47/datasets/bds/download").mock(
+    respx.get(f"{PROXY}/lp/1.47/datasets/bds/download").mock(
         return_value=httpx.Response(403, headers={"Retry-After": "3600"},
                                     json={"title": "Quota exceeded"}))
     with pytest.raises(D2lApiError) as excInfo:

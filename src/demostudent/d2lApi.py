@@ -1,9 +1,14 @@
 """Thread-safe D2L Brightspace API client.
 
+Every call goes through apiProxy2, which mirrors the tenant's /d2l/api at
+its own root: {proxyUrl}/lp/1.47/users/whoami reaches
+https://{host}/d2l/api/lp/1.47/users/whoami. The proxy runs in
+passthrough mode, so this client still sends its own bearer token.
+
 Wraps a shared httpx.Client (safe for concurrent use) and handles the
 cross-cutting concerns: bearer auth, one refresh-and-retry on 401,
 Retry-After backoff on 429, and product-version negotiation via
-GET /d2l/api/versions/ so no API versions are hardcoded.
+GET /versions/ so no API versions are hardcoded.
 """
 
 import threading
@@ -41,7 +46,8 @@ class D2lApiClient:
     ):
         self._config = config
         self._tokenManager = tokenManager
-        self._baseUrl = f"https://{config.host}"
+        self._proxyUrl = config.proxyUrl
+        self._tenantApiUrl = f"https://{config.host}/d2l/api"
         self._http = httpClient or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
         self._sleepFunc = sleepFunc
         self._versionLock = threading.Lock()
@@ -63,7 +69,7 @@ class D2lApiClient:
         course is deleted.
         """
         try:
-            response = self._request("GET", "/d2l/api/versions/")
+            response = self._request("GET", "/versions/")
         except D2lApiError as error:
             raise D2lApiError(f"Could not negotiate API versions: {error}") from error
         products = {entry["ProductCode"]: entry["LatestVersion"] for entry in response.json()}
@@ -71,7 +77,7 @@ class D2lApiClient:
             self._lpVersion = products["lp"]
             self._leVersion = products["le"]
         except KeyError as error:
-            raise D2lApiError(f"/d2l/api/versions/ did not report product {error}") from error
+            raise D2lApiError(f"/versions/ did not report product {error}") from error
 
     def _lp(self) -> str:
         """Latest supported Learning Platform API version, fetched once."""
@@ -92,18 +98,30 @@ class D2lApiClient:
         allowNotFound: bool = False,
         allowRedirect: bool = False,
     ) -> httpx.Response:
-        """Issue a request with auth, 401 refresh-retry, and 429 backoff."""
+        """Issue a request through the proxy with auth, 401 refresh-retry, and 429 backoff.
+
+        Every request asks the proxy not to cache. This tool decides what
+        to create, enroll, deactivate or delete from what it reads, and
+        the proxy would otherwise answer a read with a copy up to minutes
+        old.
+        """
         accessToken = self._tokenManager.getAccessToken()
         refreshed = False
         rateLimitRetries = 0
         while True:
-            response = self._http.request(
-                method,
-                f"{self._baseUrl}{path}",
-                json=json,
-                params=params,
-                headers={"Authorization": f"Bearer {accessToken}"},
-            )
+            try:
+                response = self._http.request(
+                    method,
+                    f"{self._proxyUrl}{path}",
+                    json=json,
+                    params=params,
+                    headers={"Authorization": f"Bearer {accessToken}",
+                             "Cache-Control": "no-cache"},
+                )
+            except httpx.ConnectError as error:
+                raise D2lApiError(
+                    f"Could not reach the API proxy at {self._proxyUrl}. "
+                    f"Is apiProxy2 running? ({error})") from error
             if response.status_code == 401 and not refreshed:
                 accessToken = self._tokenManager.handleUnauthorized(accessToken)
                 refreshed = True
@@ -124,15 +142,27 @@ class D2lApiClient:
                 httpStatus=response.status_code,
             )
 
+    def _apiPath(self, link: str) -> str:
+        """The part of a D2L API link after /d2l/api, to request through the proxy.
+
+        Data Sets responses carry absolute links on the tenant, and the
+        proxy relays bodies unchanged. The proxy reaches only the tenant,
+        so a link anywhere else cannot be followed through it.
+        """
+        if not link.startswith(f"{self._tenantApiUrl}/"):
+            raise D2lApiError(
+                f"Cannot follow {link}: it is not a D2L API link on {self._config.host}")
+        return link[len(self._tenantApiUrl):]
+
     # --- routes ---
 
     def whoAmI(self) -> dict[str, Any]:
         """Identity of the authorized user; cheap credential sanity check."""
-        return self._request("GET", f"/d2l/api/lp/{self._lp()}/users/whoami").json()
+        return self._request("GET", f"/lp/{self._lp()}/users/whoami").json()
 
     def getOrgUnit(self, orgUnitId: int) -> dict[str, Any]:
         """Org unit properties (name, type, code)."""
-        return self._request("GET", f"/d2l/api/lp/{self._lp()}/orgstructure/{orgUnitId}").json()
+        return self._request("GET", f"/lp/{self._lp()}/orgstructure/{orgUnitId}").json()
 
     def iterDescendants(self, orgUnitId: int, ouTypeId: int) -> Iterator[dict[str, Any]]:
         """All descendants of an org unit of one type, following paging bookmarks."""
@@ -143,7 +173,7 @@ class D2lApiClient:
                 params["bookmark"] = bookmark
             response = self._request(
                 "GET",
-                f"/d2l/api/lp/{self._lp()}/orgstructure/{orgUnitId}/descendants/paged/",
+                f"/lp/{self._lp()}/orgstructure/{orgUnitId}/descendants/paged/",
                 params=params,
             )
             page = response.json()
@@ -157,7 +187,7 @@ class D2lApiClient:
         """Exact-match user lookup; None when the user does not exist."""
         response = self._request(
             "GET",
-            f"/d2l/api/lp/{self._lp()}/users/",
+            f"/lp/{self._lp()}/users/",
             params={"userName": userName},
             allowNotFound=True,
         )
@@ -188,7 +218,7 @@ class D2lApiClient:
         while True:
             params: dict[str, Any] = {"bookmark": bookmark} if bookmark else {}
             response = self._request(
-                "GET", f"/d2l/api/lp/{self._lp()}/users/", params=params)
+                "GET", f"/lp/{self._lp()}/users/", params=params)
             page = response.json()
             items = page["Items"]
             yield from items
@@ -206,18 +236,20 @@ class D2lApiClient:
 
     # --- Brightspace Data Sets ---
 
-    def _iterObjectListPages(self, url: str) -> Iterator[dict[str, Any]]:
-        """Walk an ObjectListPage, following its Next links.
+    def _iterObjectListPages(self, path: str) -> Iterator[dict[str, Any]]:
+        """Walk an ObjectListPage from its first page, following its Next links.
 
         Data Sets routes page differently from the rest of the API: each
-        response carries an absolute Next URL rather than a bookmark to
-        feed back as a parameter.
+        response carries an absolute Next URL on the tenant rather than a
+        bookmark to feed back as a parameter.
         """
-        while url:
-            path = url[len(self._baseUrl):] if url.startswith(self._baseUrl) else url
+        while True:
             page = self._request("GET", path).json()
             yield from page.get("Objects", [])
-            url = page.get("Next") or ""
+            nextLink = page.get("Next")
+            if not nextLink:
+                return
+            path = self._apiPath(nextLink)
 
     def findDataSet(self, name: str) -> dict[str, Any] | None:
         """The schema and full-extract plugin ids for a named data set.
@@ -233,8 +265,7 @@ class D2lApiClient:
         matches on the full extract's Name.
         """
         try:
-            dataSets = self._iterObjectListPages(
-                f"{self._baseUrl}/d2l/api/lp/{self._lp()}/datasets/bds")
+            dataSets = self._iterObjectListPages(f"/lp/{self._lp()}/datasets/bds")
             for dataSet in dataSets:
                 full = dataSet.get("Full")
                 if full and full.get("Name") == name:
@@ -258,8 +289,7 @@ class D2lApiClient:
         """
         extracts = [
             extract for extract in self._iterObjectListPages(
-                f"{self._baseUrl}/d2l/api/lp/{self._lp()}/datasets/bds/"
-                f"{schemaId}/plugins/{pluginId}/extracts")
+                f"/lp/{self._lp()}/datasets/bds/{schemaId}/plugins/{pluginId}/extracts")
             if extract.get("BdsType") == "Full"
         ]
         if not extracts:
@@ -278,10 +308,13 @@ class D2lApiClient:
         not D2L, and the URL already carries its own authorization. The
         redirect is handled here rather than by httpx so the header can
         be dropped on the cross-host hop.
+
+        The proxy relays D2L's redirect without following it, and the
+        storage hop goes straight to storage. It is the one request here
+        that bypasses the proxy, because it is not a D2L API call.
         """
+        path = self._apiPath(downloadLink)
         target.parent.mkdir(parents=True, exist_ok=True)
-        path = (downloadLink[len(self._baseUrl):]
-                if downloadLink.startswith(self._baseUrl) else downloadLink)
 
         response = self._request("GET", path, allowRedirect=True)
         if response.status_code in (301, 302, 303, 307, 308):
@@ -319,7 +352,7 @@ class D2lApiClient:
             params: dict[str, Any] = {"bookmark": bookmark} if bookmark else {}
             response = self._request(
                 "GET",
-                f"/d2l/api/lp/{self._lp()}/enrollments/users/{userId}/orgUnits/",
+                f"/lp/{self._lp()}/enrollments/users/{userId}/orgUnits/",
                 params=params,
                 allowNotFound=True,
             )
@@ -346,7 +379,7 @@ class D2lApiClient:
         """Create a new user (no creation email is sent)."""
         response = self._request(
             "POST",
-            f"/d2l/api/lp/{self._lp()}/users/",
+            f"/lp/{self._lp()}/users/",
             json={
                 "OrgDefinedId": "",
                 "FirstName": firstName,
@@ -368,7 +401,7 @@ class D2lApiClient:
         within 30 days, and only if no account has reused their username
         since. Be sure before calling this.
         """
-        self._request("DELETE", f"/d2l/api/lp/{self._lp()}/users/{userId}")
+        self._request("DELETE", f"/lp/{self._lp()}/users/{userId}")
 
     def setUserActivation(self, userId: int, isActive: bool) -> None:
         """Activate or deactivate a user, leaving the rest of the record alone.
@@ -379,7 +412,7 @@ class D2lApiClient:
         """
         self._request(
             "PUT",
-            f"/d2l/api/lp/{self._lp()}/users/{userId}/activation",
+            f"/lp/{self._lp()}/users/{userId}/activation",
             json={"IsActive": isActive},
         )
 
@@ -387,7 +420,7 @@ class D2lApiClient:
         """Enroll a user in an org unit (updates the role in place if enrolled)."""
         response = self._request(
             "POST",
-            f"/d2l/api/lp/{self._lp()}/enrollments/",
+            f"/lp/{self._lp()}/enrollments/",
             json={
                 "OrgUnitId": orgUnitId,
                 "UserId": userId,
