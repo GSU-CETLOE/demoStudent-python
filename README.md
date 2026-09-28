@@ -12,6 +12,12 @@ When a course offering is deleted, its demo student stays behind.
 `find-orphans` reports those leftover accounts and `delete-orphans`
 retires them.
 
+Every D2L API call goes through apiProxy2, a separate reverse proxy that
+mirrors the tenant's `/d2l/api`. The proxy runs in passthrough mode: this
+tool still signs in with its own OAuth2 application and sends its own bearer
+token, and the proxy relays it. Sign-in and token refresh go straight to
+`auth.brightspace.com`, which the proxy does not cover.
+
 This tool replaces the legacy PHP cron script
 [gsu-dle/add_demo_user](https://github.com/gsu-dle/add_demo_user), moving from
 D2L ID/Key auth to OAuth2 and from a flat tracking file to SQLite.
@@ -47,11 +53,42 @@ mkcert -install       # one-time: trust the local CA
 No mkcert or no browser on the machine? Use `demo-student auth --manual`
 instead — no local server or certificate is needed.
 
-### 3. Configure
+### 3. Start apiProxy2
+
+The tool has no direct route to D2L. Every API call goes to apiProxy2, so the
+proxy has to be running, and reachable, wherever the tool runs: your machine,
+the cron server, or a container. Set it up from its own README. Started with
+`uv run apiproxy`, it listens on `http://127.0.0.1:8080`.
+
+Three proxy settings matter here:
+
+- Leave `D2L_PROXY_AUTH_ENABLED` off. This tool sends its own bearer token,
+  and with proxy authentication on, the proxy refuses any request without an
+  `X-Proxy-Key`.
+- `D2L_TENANT_HOST` must name the same tenant as `host` in `config.toml`.
+- If `D2L_RATE_LIMIT_ENABLED` is on, the budget applies to this tool too. A
+  full run makes thousands of calls, and at the default of 60 a minute it
+  crawls. The tool waits out each 429 using `Retry-After`, up to five times
+  per request, and then treats the call as failed.
+
+The tool asks the proxy not to cache anything, by sending
+`Cache-Control: no-cache` on every request. It decides what to create,
+enroll, deactivate, and delete from what it reads, and a cached read could be
+minutes old. In the proxy's log, every request from this tool shows
+`"cache":"BYPASS"`.
+
+### 4. Configure
 
 ```sh
 cp config.example.toml config.toml
 ```
+
+Set `proxyUrl` to the proxy's base URL, such as `http://127.0.0.1:8080`. It is
+required, and there is no fallback to calling D2L directly. Use `https://` for
+a proxy on another machine, since every request carries the tool's bearer
+token. Give the proxy's root, not `/d2l/api`: the proxy maps its root to
+`/d2l/api` itself. With the wrong base no path reaches a real D2L route, and
+commands stop with `Could not negotiate API versions`.
 
 Fill in `host`, `clientId`, `clientSecret`, and `redirectUri` from your
 registered OAuth2 application (D2L Admin Tools > Manage Extensibility >
@@ -286,6 +323,11 @@ the run going.
 
 All commands accept `--config PATH` (default: `config.toml`).
 
+Every command except `status` and `import-legacy` calls D2L, so apiProxy2 must
+be running for them. `auth` needs it too, for the `whoami` check after
+sign-in. When the proxy is down, a command exits 1 with
+`Could not reach the API proxy at http://127.0.0.1:8080. Is apiProxy2 running?`
+
 ### `demo-student auth`
 
 Signs in to D2L and stores the OAuth2 token pair. Run this once; afterwards
@@ -313,6 +355,7 @@ uv run demo-student whoami
 
 ```
   Host:       yourschool.brightspace.com
+  Proxy:      http://127.0.0.1:8080
   Name:       CETLOE Api
   Username:   cetloe.api
   User id:    12345
@@ -649,7 +692,7 @@ Notes on the deploy step:
   environment lives next to the deployed code, not in the runner's temporary
   checkout.
 
-### Docker Deplayment
+### Docker Deployment
 
 ```sh
 git clone https://github.com/GSU-CETLOE/demoStudent-Python.git
@@ -663,11 +706,19 @@ docker run --rm \
   demo-student:latest run
 ```
 
+Inside the container, `127.0.0.1` is the container itself, not the host, so a
+`proxyUrl` of `http://127.0.0.1:8080` does not reach a proxy running on the
+host. On Linux, `--network host` shares the host's network, and that URL then
+works.
+
 ### One-time server setup (before the first deploy)
 
 ```sh
 sudo mkdir -p /apps/local/cetlocron/data/apps/demoStudent
 sudo chown -R <runner-user> /apps/local/cetlocron/data/apps/demoStudent
 cd /apps/local/cetlocron/data/apps/demoStudent
-cp config.example.toml config.toml   # then fill in host, clientId, clientSecret, redirectUri
+cp config.example.toml config.toml   # then fill in host, proxyUrl, clientId, clientSecret, redirectUri
 ```
+
+The server also needs a running apiProxy2 that the cron job can reach. See
+[Start apiProxy2](#3-start-apiproxy2).

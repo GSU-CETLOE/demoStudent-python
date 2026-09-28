@@ -468,7 +468,7 @@ def test_findOrphansStopsWhenTheProxyIsDown(configPath, storedTokens, capsys):
 
 @respx.mock
 def test_findOrphansStopsWhenVersionsCannotBeNegotiated(configPath, storedTokens, capsys):
-    """A proxyUrl with the wrong base 404s every path, /versions/ included.
+    """A proxyUrl with the wrong base leaves no path routable, /versions/ included.
 
     No lookup can succeed without versions, so the command stops rather
     than filing every course as unconfirmable.

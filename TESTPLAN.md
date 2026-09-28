@@ -10,6 +10,13 @@ manual testing.
 
 - [ ] `uv sync` completes without errors
 - [ ] `cp config.example.toml config.toml`, fill in test-instance values
+- [ ] apiProxy2 is running in passthrough mode (`D2L_PROXY_AUTH_ENABLED`
+      off), its `D2L_TENANT_HOST` is the test instance, and `proxyUrl` in
+      `config.toml` points at it
+- [ ] With `proxyUrl` removed from `config.toml`, any command exits 2 and
+      names `proxyUrl`
+- [ ] With `proxyUrl = "127.0.0.1:8080"` (no scheme), any command exits 2
+      and says it must start with `http://` or `https://`
 - [ ] `uv run demo-student --help` shows the seven subcommands
 - [ ] Running any command with a missing config file prints a clear error and exits 2
 
@@ -28,11 +35,31 @@ manual testing.
 
 ## whoami
 
-- [ ] `uv run demo-student whoami` prints the host, name, username, user id,
-      and token file path of the account signed in via `auth` (matches the
+- [ ] `uv run demo-student whoami` prints the host, proxy URL, name, username,
+      user id, and token file path of the account signed in via `auth` (matches the
       account shown in the D2L UI)
 - [ ] After deleting `working/token/token.json`, `whoami` exits 2 with a
       message that says to run `demo-student auth`
+
+## apiProxy2
+
+- [ ] While `whoami` runs, the proxy's log shows each request with
+      `"cache":"BYPASS"`: the tool never reads from or fills the cache
+- [ ] Stop the proxy. `whoami` exits 1 with "Could not reach the API proxy
+      at <proxyUrl>. Is apiProxy2 running?" and no traceback
+- [ ] With the proxy still stopped, `run --dry-run` exits 1 with the same
+      message
+- [ ] With the proxy still stopped and an inventory already built,
+      `find-orphans` exits 1 with the same message, rather than listing
+      every course as "cannot confirm"
+- [ ] Start the proxy again and set `proxyUrl` to
+      `http://127.0.0.1:8080/d2l/api` (a wrong base). `find-orphans` exits 1
+      with "Could not negotiate API versions" and reports no orphans. Put
+      the URL back afterwards
+- [ ] `find-orphans --rescan` with Data Sets available: the proxy's log
+      shows the `datasets/bds` listing, the extracts listing, and the
+      download request. The download from storage itself does not appear
+      there, because the tool follows D2L's redirect to storage directly
 
 ## run
 
