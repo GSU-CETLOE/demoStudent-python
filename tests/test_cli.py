@@ -240,6 +240,18 @@ def test_whoamiShowsAuthenticatedIdentity(configPath, storedTokens, capsys):
     assert "cetloe.api" in out
     assert "1234" in out
     assert "token.json" in out
+    assert PROXY in out  # every call went through it, so say which one
+
+
+@respx.mock
+def test_stoppedProxyGetsAPlainMessage(configPath, storedTokens, capsys):
+    """A stopped proxy is the likeliest failure, so it must not end in a traceback."""
+    respx.get(f"{PROXY}/versions/").mock(side_effect=httpx.ConnectError("Connection refused"))
+    exitCode = main(["--config", str(configPath), "whoami"])
+    assert exitCode == 1
+    err = capsys.readouterr().err
+    assert PROXY in err
+    assert "Is apiProxy2 running?" in err
 
 
 def test_whoamiWithoutTokensTellsUserToAuth(configPath, capsys):

@@ -149,6 +149,7 @@ def cmdWhoami(config: AppConfig) -> int:
     identity = _fetchIdentity(config)
     emitBlock("Authenticated account", [
         f"  Host:       {config.host}",
+        f"  Proxy:      {config.proxyUrl}",
         f"  Name:       {_identityName(identity)}",
         f"  Username:   {identity.get('UniqueName', '-')}",
         f"  User id:    {identity.get('Identifier', '-')}",
