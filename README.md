@@ -12,10 +12,11 @@ When a course offering is deleted, its demo student stays behind.
 `find-orphans` reports those leftover accounts and `delete-orphans`
 retires them.
 
-Every D2L API call goes through apiProxy2, a separate reverse proxy that
-mirrors the tenant's `/d2l/api`. The proxy runs in passthrough mode: this
-tool still signs in with its own OAuth2 application and sends its own bearer
-token, and the proxy relays it. Sign-in and token refresh go straight to
+D2L API calls go straight to the tenant unless `proxyUrl` is set, in which
+case every one goes through apiProxy2, a separate reverse proxy that mirrors
+the tenant's `/d2l/api`. The proxy runs in passthrough mode: this tool still
+signs in with its own OAuth2 application and sends its own bearer token, and
+the proxy relays it. Sign-in and token refresh always go straight to
 `auth.brightspace.com`, which the proxy does not cover.
 
 This tool replaces the legacy PHP cron script
@@ -53,11 +54,12 @@ mkcert -install       # one-time: trust the local CA
 No mkcert or no browser on the machine? Use `demo-student auth --manual`
 instead — no local server or certificate is needed.
 
-### 3. Start apiProxy2
+### 3. Start apiProxy2 (optional)
 
-The tool has no direct route to D2L. Every API call goes to apiProxy2, so the
-proxy has to be running, and reachable, wherever the tool runs: your machine,
-the cron server, or a container. Set it up from its own README. Started with
+Skip this step to have the tool call D2L directly. To route its calls through
+apiProxy2 instead, set `proxyUrl` (see [Configure](#4-configure)), and the proxy
+has to be running, and reachable, wherever the tool runs: your machine, the
+cron server, or a container. Set it up from its own README. Started with
 `uv run apiproxy`, it listens on `http://127.0.0.1:8080`.
 
 Three proxy settings matter here:
@@ -83,19 +85,21 @@ minutes old. In the proxy's log, every request from this tool shows
 cp config.example.toml config.toml
 ```
 
-Set `proxyUrl` to the proxy's base URL, such as `http://127.0.0.1:8080`. It is
-required, and there is no fallback to calling D2L directly. Use `https://` for
-a proxy on another machine, since every request carries the tool's bearer
-token. Give the proxy's root, not `/d2l/api`: the proxy maps its root to
-`/d2l/api` itself. With the wrong base no path reaches a real D2L route, and
-commands stop with `Could not negotiate API versions`.
-
 Fill in `host`, `clientId`, `clientSecret`, and `redirectUri` from your
 registered OAuth2 application (D2L Admin Tools > Manage Extensibility >
 OAuth 2.0). The registered redirect URI must match `redirectUri` exactly
 (e.g. `https://localhost:8443/callback`). The client secret can also be
 provided via the `DEMO_STUDENT_CLIENT_SECRET` environment variable instead of
 the file. All other settings have defaults — see `config.example.toml`.
+
+`proxyUrl` picks the route to D2L. Leave it out and the tool calls
+`https://{host}/d2l/api` directly. Set it to the proxy's base URL, such as
+`http://127.0.0.1:8080`, and every API call goes through apiProxy2 instead.
+`demo-student whoami` shows which one is in use. Use `https://` for a proxy on
+another machine, since every request carries the tool's bearer token. Give the
+proxy's root, not `/d2l/api`: the proxy maps its root to `/d2l/api` itself.
+With the wrong base no path reaches a real D2L route, and commands stop with
+`Could not negotiate API versions`.
 
 Runtime state lives in the `working/` directory (configurable via
 `workingDir`; gitignored):
@@ -323,10 +327,12 @@ the run going.
 
 All commands accept `--config PATH` (default: `config.toml`).
 
-Every command except `status` and `import-legacy` calls D2L, so apiProxy2 must
-be running for them. `auth` needs it too, for the `whoami` check after
-sign-in. When the proxy is down, a command exits 1 with
+Every command except `status` and `import-legacy` calls D2L. With `proxyUrl`
+set, apiProxy2 must be running for them, `auth` included, since it checks the
+new token with `whoami`. When the proxy is down, a command exits 1 with
 `Could not reach the API proxy at http://127.0.0.1:8080. Is apiProxy2 running?`
+Calling D2L directly, the same failure reads
+`Could not reach D2L at https://yourschool.brightspace.com/d2l/api.`
 
 ### `demo-student auth`
 
@@ -361,6 +367,8 @@ uv run demo-student whoami
   User id:    12345
   Token file: working/token/token.json
 ```
+
+Without `proxyUrl`, the Proxy line reads `none, calling D2L directly`.
 
 Exits 2 with a message to run `demo-student auth` when no tokens are stored.
 
@@ -706,9 +714,9 @@ docker run --rm \
   demo-student:latest run
 ```
 
-Inside the container, `127.0.0.1` is the container itself, not the host, so a
-`proxyUrl` of `http://127.0.0.1:8080` does not reach a proxy running on the
-host. On Linux, `--network host` shares the host's network, and that URL then
+If the config sets `proxyUrl`, note that inside the container `127.0.0.1` is
+the container itself, not the host, so `http://127.0.0.1:8080` does not reach a
+proxy running on the host. On Linux, `--network host` shares the host's network, and that URL then
 works.
 
 ### One-time server setup (before the first deploy)
@@ -717,8 +725,8 @@ works.
 sudo mkdir -p /apps/local/cetlocron/data/apps/demoStudent
 sudo chown -R <runner-user> /apps/local/cetlocron/data/apps/demoStudent
 cd /apps/local/cetlocron/data/apps/demoStudent
-cp config.example.toml config.toml   # then fill in host, proxyUrl, clientId, clientSecret, redirectUri
+cp config.example.toml config.toml   # then fill in host, clientId, clientSecret, redirectUri
 ```
 
-The server also needs a running apiProxy2 that the cron job can reach. See
-[Start apiProxy2](#3-start-apiproxy2).
+If the config sets `proxyUrl`, the server also needs a running apiProxy2 that
+the cron job can reach. See [Start apiProxy2](#3-start-apiproxy2-optional).

@@ -10,11 +10,6 @@ manual testing.
 
 - [ ] `uv sync` completes without errors
 - [ ] `cp config.example.toml config.toml`, fill in test-instance values
-- [ ] apiProxy2 is running in passthrough mode (`D2L_PROXY_AUTH_ENABLED`
-      off), its `D2L_TENANT_HOST` is the test instance, and `proxyUrl` in
-      `config.toml` points at it
-- [ ] With `proxyUrl` removed from `config.toml`, any command exits 2 and
-      names `proxyUrl`
 - [ ] With `proxyUrl = "127.0.0.1:8080"` (no scheme), any command exits 2
       and says it must start with `http://` or `https://`
 - [ ] `uv run demo-student --help` shows the seven subcommands
@@ -41,7 +36,22 @@ manual testing.
 - [ ] After deleting `working/token/token.json`, `whoami` exits 2 with a
       message that says to run `demo-student auth`
 
-## apiProxy2
+## Route to D2L
+
+The rest of this plan runs in either mode. Work through it once with
+`proxyUrl` set before relying on the proxy in production.
+
+Direct, with no `proxyUrl` in `config.toml`:
+
+- [ ] `whoami` shows "Proxy: none, calling D2L directly" and succeeds with
+      apiProxy2 stopped
+- [ ] With `host` temporarily set to `nonexistent.invalid`, `whoami` exits 1
+      with "Could not reach D2L at https://nonexistent.invalid/d2l/api." and
+      no mention of apiProxy2. Put `host` back afterwards
+
+Through the proxy, with apiProxy2 running in passthrough mode
+(`D2L_PROXY_AUTH_ENABLED` off), its `D2L_TENANT_HOST` set to the test
+instance, and `proxyUrl` pointing at it:
 
 - [ ] While `whoami` runs, the proxy's log shows each request with
       `"cache":"BYPASS"`: the tool never reads from or fills the cache
