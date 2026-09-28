@@ -62,7 +62,8 @@ has to be running, and reachable, wherever the tool runs: your machine, the
 cron server, or a container. Set it up from its own README. Started with
 `uv run apiproxy`, it listens on `http://127.0.0.1:8080`.
 
-Three proxy settings matter here:
+Three of apiProxy2's own settings matter here. They go in the proxy's `.env`
+file, not in this tool's `config.toml`:
 
 - Leave `D2L_PROXY_AUTH_ENABLED` off. This tool sends its own bearer token,
   and with proxy authentication on, the proxy refuses any request without an

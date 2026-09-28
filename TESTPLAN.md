@@ -49,9 +49,9 @@ Direct, with no `proxyUrl` in `config.toml`:
       with "Could not reach D2L at https://nonexistent.invalid/d2l/api." and
       no mention of apiProxy2. Put `host` back afterwards
 
-Through the proxy, with apiProxy2 running in passthrough mode
-(`D2L_PROXY_AUTH_ENABLED` off), its `D2L_TENANT_HOST` set to the test
-instance, and `proxyUrl` pointing at it:
+Through the proxy, with apiProxy2 running in passthrough mode and
+`proxyUrl` in `config.toml` pointing at it. In apiProxy2's `.env`,
+`D2L_PROXY_AUTH_ENABLED` is off and `D2L_TENANT_HOST` is the test instance:
 
 - [ ] While `whoami` runs, the proxy's log shows each request with
       `"cache":"BYPASS"`: the tool never reads from or fills the cache

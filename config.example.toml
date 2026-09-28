@@ -9,13 +9,15 @@ clientId = "your-oauth2-client-id"
 clientSecret = "your-oauth2-client-secret"
 redirectUri = "https://localhost:8443/callback"  # must match the registered redirect URI
 
+# --- route to D2L ---
+# Unset (the default), the tool calls https://{host}/d2l/api directly.
+# Uncomment to send every D2L API call through apiProxy2 instead. Use
+# https:// for a proxy on another machine, since each request carries your
+# bearer token. The proxy's own settings, such as D2L_PROXY_AUTH_ENABLED,
+# go in apiProxy2's .env file, not here; see "Start apiProxy2" in README.md.
+# proxyUrl = "http://127.0.0.1:8080"
+
 # --- optional (defaults shown) ---
-# proxyUrl = "http://127.0.0.1:8080"  # send every D2L API call through apiProxy2.
-#                                     # Unset (the default), the tool calls D2L
-#                                     # directly. Use https:// for a proxy on
-#                                     # another machine, since each request
-#                                     # carries your bearer token.
-#
 # scope = "core:*:*"              # catch-all; grants far more than this tool uses
 #
 # Minimum scope this tool actually needs. Register these on the OAuth2
