@@ -142,18 +142,18 @@ def test_confirmLeavesUnexpectedErrorsUnknown(config, db):
 
 def test_confirmStopsWhenTheProxyIsUnreachable(config, db):
     """No course can be checked, so marking each one unknown would only mislead."""
-    from demostudent.d2lApi import D2lUnreachableError
+    from demostudent.d2lApi import D2lUnavailableError
     from demostudent.orphans import confirmCourseStates
 
     class UnreachableApi(FakeApi):
         def getOrgUnit(self, orgUnitId):
             self.orgUnitLookups.append(orgUnitId)
-            raise D2lUnreachableError("Could not reach the API proxy")
+            raise D2lUnavailableError("Could not reach the API proxy")
 
     seedInventory(db, [301, 302])
     api = UnreachableApi()
 
-    with pytest.raises(D2lUnreachableError):
+    with pytest.raises(D2lUnavailableError):
         confirmCourseStates(api, db, logFunc=lambda _line: None)
     assert len(api.orgUnitLookups) == 1
     # Nothing was recorded as checked, so no course carries a verdict from this run.

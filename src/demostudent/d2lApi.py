@@ -34,8 +34,8 @@ class D2lApiError(Exception):
         self.httpStatus = httpStatus
 
 
-class D2lUnreachableError(D2lApiError):
-    """The proxy could not be reached, so no call can succeed until it is back.
+class D2lUnavailableError(D2lApiError):
+    """No call can succeed: the proxy is unreachable or API versions are unknown.
 
     A separate type so callers that shrug off one failed call and move on
     can stop instead: every remaining call would fail the same way.
@@ -71,23 +71,24 @@ class D2lApiClient:
     def _negotiateVersions(self) -> None:
         """Record the latest lp and le versions the tenant supports.
 
-        A failure here surfaces from whichever route asked first, so it
-        is re-raised without an HTTP status. Callers read a route's
-        status as that route's answer, and a 404 on getOrgUnit means the
-        course is deleted.
+        Every route needs these, so a failure here means no call can
+        succeed and is raised as D2lUnavailableError. It carries no HTTP
+        status: the failure surfaces from whichever route asked first,
+        callers read a route's status as that route's answer, and a 404
+        on getOrgUnit means the course is deleted.
         """
         try:
             response = self._request("GET", "/versions/")
-        except D2lUnreachableError:
+        except D2lUnavailableError:
             raise
         except D2lApiError as error:
-            raise D2lApiError(f"Could not negotiate API versions: {error}") from error
+            raise D2lUnavailableError(f"Could not negotiate API versions: {error}") from error
         products = {entry["ProductCode"]: entry["LatestVersion"] for entry in response.json()}
         try:
             self._lpVersion = products["lp"]
             self._leVersion = products["le"]
         except KeyError as error:
-            raise D2lApiError(f"/versions/ did not report product {error}") from error
+            raise D2lUnavailableError(f"/versions/ did not report product {error}") from error
 
     def _lp(self) -> str:
         """Latest supported Learning Platform API version, fetched once."""
@@ -129,7 +130,7 @@ class D2lApiClient:
                              "Cache-Control": "no-cache"},
                 )
             except httpx.ConnectError as error:
-                raise D2lUnreachableError(
+                raise D2lUnavailableError(
                     f"Could not reach the API proxy at {self._proxyUrl}. "
                     f"Is apiProxy2 running? ({error})") from error
             if response.status_code == 401 and not refreshed:

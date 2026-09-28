@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Protocol
 
 from .config import AppConfig
-from .d2lApi import D2lApiError, D2lUnreachableError
+from .d2lApi import D2lApiError, D2lUnavailableError
 from .db import MetricsDb
 from .logs import LOGGER_NAME
 from .output import emit
@@ -186,7 +186,7 @@ def confirmCourseStates(
                     f"{missing} already missing from D2L")
         try:
             api.getOrgUnit(orgUnitId)
-        except D2lUnreachableError:
+        except D2lUnavailableError:
             # Says nothing about this course, and every remaining lookup
             # would fail the same way.
             raise

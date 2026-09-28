@@ -467,6 +467,26 @@ def test_findOrphansStopsWhenTheProxyIsDown(configPath, storedTokens, capsys):
 
 
 @respx.mock
+def test_findOrphansStopsWhenVersionsCannotBeNegotiated(configPath, storedTokens, capsys):
+    """A proxyUrl with the wrong base 404s every path, /versions/ included.
+
+    No lookup can succeed without versions, so the command stops rather
+    than filing every course as unconfirmable.
+    """
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=200)
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    capsys.readouterr()
+
+    respx.get(f"{PROXY}/versions/").mock(return_value=httpx.Response(404))
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 1
+    captured = capsys.readouterr()
+    assert "Could not negotiate API versions" in captured.err
+    assert "Could not confirm" not in captured.out
+
+
+@respx.mock
 def test_findOrphansWritesCsvReport(configPath, storedTokens, tmp_path, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)

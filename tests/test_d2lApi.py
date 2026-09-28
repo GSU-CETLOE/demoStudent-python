@@ -8,7 +8,7 @@ import respx
 
 from demostudent.auth import TOKEN_URL, TokenManager, TokenSet, TokenStore
 from demostudent.config import AppConfig
-from demostudent.d2lApi import D2lApiClient, D2lApiError, D2lUnreachableError
+from demostudent.d2lApi import D2lApiClient, D2lApiError, D2lUnavailableError
 
 PROXY = "http://127.0.0.1:8080"
 
@@ -89,7 +89,7 @@ def test_unreachableProxyIsNamedInTheError(api):
     mockVersions()
     respx.get(f"{PROXY}/lp/1.47/orgstructure/55").mock(
         side_effect=httpx.ConnectError("Connection refused"))
-    with pytest.raises(D2lUnreachableError) as excInfo:
+    with pytest.raises(D2lUnavailableError) as excInfo:
         api.getOrgUnit(55)
     assert PROXY in str(excInfo.value)
     assert excInfo.value.httpStatus is None
@@ -99,7 +99,7 @@ def test_unreachableProxyIsNamedInTheError(api):
 def test_unreachableProxyDuringVersionNegotiationKeepsItsType(api):
     """Callers stop on an unreachable proxy, so the negotiation must not hide it."""
     respx.get(f"{PROXY}/versions/").mock(side_effect=httpx.ConnectError("Connection refused"))
-    with pytest.raises(D2lUnreachableError):
+    with pytest.raises(D2lUnavailableError):
         api.getOrgUnit(55)
 
 
@@ -112,7 +112,7 @@ def test_failedVersionNegotiationCarriesNoStatusOfItsOwnRoute(api):
     mark every course deleted.
     """
     respx.get(f"{PROXY}/versions/").mock(return_value=httpx.Response(404))
-    with pytest.raises(D2lApiError) as excInfo:
+    with pytest.raises(D2lUnavailableError) as excInfo:
         api.getOrgUnit(55)
     assert excInfo.value.httpStatus is None
     assert "versions" in str(excInfo.value)
