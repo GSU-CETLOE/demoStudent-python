@@ -446,6 +446,27 @@ def test_findOrphansSkipsCoursesItCannotSee(configPath, storedTokens, capsys):
 
 
 @respx.mock
+def test_findOrphansStopsWhenTheProxyIsDown(configPath, storedTokens, capsys):
+    """A stopped proxy is not a course the account cannot see.
+
+    With a cached inventory the command goes straight to checking each
+    course. Reading every one as unconfirmable would exit 0 and blame
+    the service account's access.
+    """
+    mockUserWalk([(9302, "demo.302")])
+    mockOrgUnit(302, status=200)
+    assert main(["--config", str(configPath), "find-orphans"]) == 0
+    capsys.readouterr()
+
+    respx.get(f"{PROXY}/versions/").mock(side_effect=httpx.ConnectError("Connection refused"))
+    exitCode = main(["--config", str(configPath), "find-orphans"])
+    assert exitCode == 1
+    captured = capsys.readouterr()
+    assert "Is apiProxy2 running?" in captured.err
+    assert "Could not confirm" not in captured.out
+
+
+@respx.mock
 def test_findOrphansWritesCsvReport(configPath, storedTokens, tmp_path, capsys):
     mockUserWalk([(9302, "demo.302")])
     mockOrgUnit(302, status=404)

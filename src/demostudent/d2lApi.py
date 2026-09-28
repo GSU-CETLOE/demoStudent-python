@@ -34,6 +34,14 @@ class D2lApiError(Exception):
         self.httpStatus = httpStatus
 
 
+class D2lUnreachableError(D2lApiError):
+    """The proxy could not be reached, so no call can succeed until it is back.
+
+    A separate type so callers that shrug off one failed call and move on
+    can stop instead: every remaining call would fail the same way.
+    """
+
+
 class D2lApiClient:
     """Client for the D2L routes this application needs."""
 
@@ -70,6 +78,8 @@ class D2lApiClient:
         """
         try:
             response = self._request("GET", "/versions/")
+        except D2lUnreachableError:
+            raise
         except D2lApiError as error:
             raise D2lApiError(f"Could not negotiate API versions: {error}") from error
         products = {entry["ProductCode"]: entry["LatestVersion"] for entry in response.json()}
@@ -119,7 +129,7 @@ class D2lApiClient:
                              "Cache-Control": "no-cache"},
                 )
             except httpx.ConnectError as error:
-                raise D2lApiError(
+                raise D2lUnreachableError(
                     f"Could not reach the API proxy at {self._proxyUrl}. "
                     f"Is apiProxy2 running? ({error})") from error
             if response.status_code == 401 and not refreshed:
