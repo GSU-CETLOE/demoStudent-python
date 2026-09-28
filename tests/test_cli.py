@@ -40,6 +40,13 @@ maxWorkers = 4
 
 
 @pytest.fixture
+def directConfigPath(configPath):
+    """The same config without proxyUrl, so the tool calls D2L directly."""
+    configPath.write_text(configPath.read_text().replace('proxyUrl = "http://127.0.0.1:8080"\n', ""))
+    return configPath
+
+
+@pytest.fixture
 def storedTokens(tmp_path):
     store = TokenStore(tmp_path / "working" / "token" / "token.json")
     store.save(TokenSet(accessToken="valid-token", refreshToken="r",
@@ -241,6 +248,17 @@ def test_whoamiShowsAuthenticatedIdentity(configPath, storedTokens, capsys):
     assert "1234" in out
     assert "token.json" in out
     assert PROXY in out  # every call went through it, so say which one
+
+
+@respx.mock
+def test_whoamiWithoutProxySaysItCallsD2lDirectly(directConfigPath, storedTokens, capsys):
+    respx.get(f"{BASE}/d2l/api/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    respx.get(f"{BASE}/d2l/api/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1234", "FirstName": "Api",
+                                               "LastName": "User", "UniqueName": "cetloe.api"}))
+    assert main(["--config", str(directConfigPath), "whoami"]) == 0
+    assert "Proxy:      none, calling D2L directly" in capsys.readouterr().out
 
 
 @respx.mock
