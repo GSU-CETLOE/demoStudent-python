@@ -52,7 +52,7 @@ mkcert -install       # one-time: trust the local CA
 ```
 
 No mkcert or no browser on the machine? Use `demo-student auth --manual`
-instead — no local server or certificate is needed.
+instead. It needs no local server or certificate.
 
 ### 3. Start apiProxy2 (optional)
 
@@ -91,7 +91,7 @@ registered OAuth2 application (D2L Admin Tools > Manage Extensibility >
 OAuth 2.0). The registered redirect URI must match `redirectUri` exactly
 (e.g. `https://localhost:8443/callback`). The client secret can also be
 provided via the `DEMO_STUDENT_CLIENT_SECRET` environment variable instead of
-the file. All other settings have defaults — see `config.example.toml`.
+the file. All other settings have defaults; see `config.example.toml`.
 
 `proxyUrl` picks the route to D2L. Leave it out and the tool calls
 `https://{host}/d2l/api` directly. Set it to the proxy's base URL, such as
@@ -115,13 +115,13 @@ working/
   localhost.pem(-key)    mkcert certificate for the browser auth flow
 ```
 
-Two runs sharing a `workingDir` are safe. D2L rotates refresh tokens — using
-one invalidates it — so without coordination a second process refreshing would
-kill the first process's token mid-run, failing every remaining course with
-`invalid_grant`. Refreshes therefore take an inter-process lock, and a process
-that finds its own refresh token already spent adopts the pair the other one
-wrote instead of failing. The lock is released by the OS if a process dies, so
-it cannot go stale.
+Two runs sharing a `workingDir` are safe. D2L rotates refresh tokens, and using
+one invalidates it. Without coordination, a second process refreshing would
+kill the first process's token mid-run, and every remaining course would fail
+with `invalid_grant`. Refreshes therefore take an inter-process lock, and a
+process that finds its own refresh token already spent adopts the pair the
+other one wrote instead of failing. The lock is released by the OS if a
+process dies, so it cannot go stale.
 
 ## Brightspace access requirements
 
@@ -138,7 +138,7 @@ scopes:
 
 | Route | Scope |
 | --- | --- |
-| `GET /d2l/api/versions/` | *(none — version negotiation is unauthenticated)* |
+| `GET /d2l/api/versions/` | *(none; version negotiation is unauthenticated)* |
 | `GET /lp/{v}/users/whoami` | `users:own_profile:read` |
 | `GET /lp/{v}/orgstructure/{ou}` | `organizations:organization:read` |
 | `GET /lp/{v}/orgstructure/{ou}/descendants/paged/` | `organizations:organization:read` |
@@ -170,7 +170,7 @@ enrollment:orgunit:create,read organizations:organization:read users:own_profile
 ```
 
 Register that on the OAuth2 application, then set `scope` in `config.toml` to
-the same value — a requested scope that isn't registered fails authorization.
+the same value. A requested scope that isn't registered fails authorization.
 Scopes are fixed at authorization time and **do not change on refresh**: after
 editing `scope`, re-run `demo-student auth` or the stored token keeps the old
 set.
@@ -194,13 +194,13 @@ Names below are as they appear in Brightspace and are grouped by tool.
 
 | Tool | Permission | Grant at | Needed for |
 | --- | --- | --- | --- |
-| Users | **Enroll '{demo student role}'** | Course Offering | `POST /lp/{v}/enrollments/` — enrolling the demo student |
-| Users | **Search for '{demo student role}'** | Organization, Course Offering | `GET /lp/{v}/users/?userName=` — finding `demo.{orgUnitId}` |
+| Users | **Enroll '{demo student role}'** | Course Offering | `POST /lp/{v}/enrollments/`, to enroll the demo student |
+| Users | **Search for '{demo student role}'** | Organization, Course Offering | `GET /lp/{v}/users/?userName=`, to find `demo.{orgUnitId}` |
 | User Information Privacy | **See Usernames** | Organization | `GET /lp/{v}/users/`, without which the orphan scan matches nothing and reports a clean empty result |
-| Users | **View User Enrollments** | Organization, Semester, Course Template, Course Offering, Department | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/` — the enrollment check |
-| Users | **Create a User in the Database** | Organization | `POST /lp/{v}/users/` — creating the demo student |
+| Users | **View User Enrollments** | Organization, Semester, Course Template, Course Offering, Department | `GET /lp/{v}/enrollments/users/{userId}/orgUnits/`, the enrollment check |
+| Users | **Create a User in the Database** | Organization | `POST /lp/{v}/users/`, to create the demo student |
 | Users | View the Users' Email Address, View Users' Contact Information | Organization | the `ExternalEmail` set on creation |
-| User Information Privacy | **every row the tool offers** | Organization | `POST /lp/{v}/users/` — D2L only lets a role create a user if it can see every user field |
+| User Information Privacy | **every row the tool offers** | Organization | `POST /lp/{v}/users/`, since D2L only lets a role create a user if it can see every user field |
 | Classlist | **Has Access to the Classlist** | Course Offering | enrollment reads and writes inside a course |
 | Classlist | **Change Enrollment** | Course Offering | Brightspace's usual pairing for enrollment changes |
 | Users | **Can Activate or Deactivate Users** | Organization | `PUT /lp/{v}/users/{userId}/activation`, for `delete-orphans` |
@@ -216,7 +216,7 @@ stands alone, but `Delete a User` and `Can Activate or Deactivate Users`
 both also require `See the User Management tool`, and deactivation wants
 `Update a User` on top of that.
 
-`Enroll '...'` and `Search for '...'` are **per-target-role** permissions —
+`Enroll '...'` and `Search for '...'` are **per-target-role** permissions.
 Brightspace lists one of each for every role in the tenant, named after that
 role. They must be enabled for the demo student role specifically. Changing
 `roleId` in the config means enabling a different pair.
@@ -241,9 +241,9 @@ User Information Privacy." Every row it offers at Organization has to be on:
 - See Name for Anonymized Activities
 - See Pronouns
 
-The last two are the ones to look at first — at GSU they were the only two left
-unchecked. Granting just the fields this tool sends is not enough, because the
-check is on the role rather than on the request. `See External ID Values` is
+Check the last two first. At GSU they were the only two left unchecked.
+Granting just the fields this tool sends is not enough, because the check is
+on the role rather than on the request. `See External ID Values` is
 offered at Course Offering only, so it cannot be granted at Organization and is
 not needed.
 
@@ -261,10 +261,10 @@ On the role's own settings page, **Course Access Options** must all be enabled:
 
 These gate the role by the *state* of a course rather than by permission, and
 they are set apart from the permissions grid, so they are easy to overlook.
-Without them the service account is blind to entire categories of course —
-most importantly courses in an upcoming semester, which have not started yet
-and are therefore *future* courses. Since the tool's whole job is to seed demo
-students into upcoming semesters, this affects exactly the courses it most
+Without them the service account cannot see whole categories of course. The
+one that matters most is courses in an upcoming semester, which have not
+started yet and so count as *future* courses. Seeding demo students into
+upcoming semesters is the tool's main job, so these are the courses it most
 needs to reach.
 
 The symptom is indistinguishable from a missing permission: discovery finds the
@@ -274,20 +274,20 @@ correctly enabled and the tool will still fail on every affected course.
 
 Worse, the failure is not always loud. The enrollment check reads from the user
 side, and Brightspace **silently omits inaccessible courses from that listing
-instead of returning an error** — so an existing enrollment in an unreachable
+instead of returning an error**. An existing enrollment in an unreachable
 course reads back as "not enrolled", and the tool tries to enroll a user who is
 already enrolled. What surfaces is a 403 on the write, which points at the
 wrong thing.
 
-To check whether the account can reach a course, request its classlist —
-`200` means it has access, `403` means it does not:
+To check whether the account can reach a course, request its classlist.
+`200` means it has access, and `403` means it does not:
 
 ```
 GET /d2l/api/le/{leVersion}/{orgUnitId}/classlist/
 ```
 
-Be aware when using the account's own enrollment listing to audit reach that it
-is filtered the same way, and so under-reports:
+The account's own enrollment listing is filtered the same way, so it
+under-reports if you use it to audit reach:
 
 ```
 GET /d2l/api/lp/{lpVersion}/enrollments/users/{callerUserId}/orgUnits/
@@ -307,8 +307,8 @@ all:
 
 | Response | Meaning |
 | --- | --- |
-| `{"Errors":[{"Message":"Not Authorized"}]}` | Role permission **or** Course Access Options — the account has no authority in that org unit |
-| `Insufficient scope to call API. Required: <scope>` | OAuth2 scope — D2L names the missing scope; add it and re-run `demo-student auth` |
+| `{"Errors":[{"Message":"Not Authorized"}]}` | Role permission **or** Course Access Options: the account has no authority in that org unit |
+| `Insufficient scope to call API. Required: <scope>` | OAuth2 scope. D2L names the missing scope; add it and re-run `demo-student auth` |
 | `404 {"Errors":[{"Message":"Resource Not Found"}]}` | The account *does* have access; the user simply is not enrolled there. Handled normally, not an error |
 
 The 403/404 split is a useful probe: ask for a user you know is *not* enrolled
@@ -320,9 +320,9 @@ The tool checks enrollment from the user side
 (`/enrollments/orgUnits/{ou}/users/{userId}`). Both need only
 `enrollment:orgunit:read`, but the org unit side returns 403 outright in any
 course the account cannot reach, whereas the user side returns 200 and omits
-those courses — so the check degrades to a wrong answer rather than a hard
-failure. Neither route escapes the access requirement; the user side just keeps
-the run going.
+those courses. The check degrades to a wrong answer instead of a hard failure.
+Neither route escapes the access requirement; the user side just keeps the run
+going.
 
 ## Commands
 
@@ -346,13 +346,13 @@ uv run demo-student auth --manual   # headless flow: open the printed URL on
                                     # any device, then paste the redirect URL back
 ```
 
-In the manual flow the browser shows a connection error after sign-in — that
+In the manual flow the browser shows a connection error after sign-in. That
 is expected. Copy the full URL from the address bar (it contains the
 authorization code) and paste it into the prompt.
 
 ### `demo-student whoami`
 
-Shows which D2L account the stored tokens act as — every user and enrollment
+Shows which D2L account the stored tokens act as. Every user and enrollment
 the tool creates is attributed to this account, so check here when a run
 fails with 403s or when several service accounts are in play.
 
@@ -395,8 +395,8 @@ Discovery pages through the course-offering descendants of `orgOu`, so it
 reaches every course in the organization regardless of where it hangs in the
 org structure. This matters because **a course offering does not have to have
 a semester parent**: building sections, sandboxes, and university-related
-courses are parented to a course template instead. Walking semesters — as the
-legacy tool and earlier versions of this one did — silently skips those. On the
+courses are parented to a course template instead. Walking semesters, as the
+legacy tool and earlier versions of this one did, silently skips those. On the
 GSU organization that is about 12,000 course offerings, roughly 6% of the
 total, including current-term building sections.
 
@@ -477,15 +477,14 @@ rather than sitting silent:
 Every line carries the time it happened, in the format the log files
 use, so a console session and `working/logs/demoStudent_YYYYMM.log` can
 be read side by side. Summaries and tables print as one block under a
-stamped header, keeping their columns aligned.
+stamped header, so their columns stay aligned.
 
 Why read the accounts from D2L instead of from `completedCourses`? That
 table is a skip list and gets pruned after a year. A course deleted
 after its row ages out leaves nothing behind to notice, and the oldest
-demo students are the ones most likely to have lost their course. So the
-population that matters most is the one a `completedCourses` scan is
-worst at seeing. Reading from D2L sidesteps that, because a demo
-student's username carries its own org unit id.
+demo students are the ones most likely to have lost their course.
+Reading from D2L sidesteps that, because a demo student's username
+carries its own org unit id.
 
 The verdict comes from the course lookup:
 
@@ -538,8 +537,8 @@ need to consult `GET /lp/{v}/orgstructure/recyclebin/` as well.
 D2L filters its user listing by what the calling role may see. It
 withholds individual fields the same way, and says nothing about either
 in the response. A service account that cannot read usernames matches
-zero demo students and gets back a clean, well-formed, empty result,
-indistinguishable from a tenant with nothing to clean up.
+zero demo students and gets back an empty result that looks exactly like
+a tenant with nothing to clean up.
 
 So the scan stops with exit code 2 on the first user that arrives
 without a username, rather than walking a few hundred thousand records
@@ -548,7 +547,7 @@ Privacy, then re-run.
 
 That guard catches the total blackout, not a partial one. Compare the
 demo student count against what you expect for the tenant; if it comes
-in well under, the service account is seeing only part of the picture.
+in well under, the service account is seeing only part of the tenant.
 
 ### `demo-student delete-orphans`
 
@@ -631,34 +630,36 @@ uv run demo-student import-legacy /path/to/demo_783_newuser_co.txt
 
 `working/db/demoStudent.db` (SQLite, WAL mode) with four tables:
 
-- `completedCourses` — org units that have their demo student; the skip list.
-- `demoStudents`, an inventory of the demo student accounts that exist in
+- `completedCourses`: org units that have their demo student. This is the
+  skip list.
+- `demoStudents`: an inventory of the demo student accounts that exist in
   D2L, each with the org unit its username names and the verdict from the
   last course lookup (`live`, `deleted`, or `unknown`).
-- `runs` — one row per run: timestamps, status, and counts (discovered,
+- `runs`: one row per run, with timestamps, status, and counts (discovered,
   skipped, checked, users created, enrollments created, errors).
-- `errors` — individual failures with run id, org unit, phase, HTTP status,
+- `errors`: individual failures with run id, org unit, phase, HTTP status,
   and message.
 
 Dashboards can read this file directly; the schema is stable.
 
 Retention: at the start of every run, rows older than one year are deleted
-from `completedCourses`, `runs`, and `errors`. **`demoStudents` is exempt.**
-Those rows track accounts that exist in D2L, and the oldest of them are
-the ones most likely to have lost their course. Ageing them out would
-hide the very orphans the cleanup is for. If a pruned course ever reappears in discovery it is
-simply re-checked (found already enrolled) and re-recorded — nothing is
-enrolled twice. To re-verify sooner than a year, use `run --recheck` instead
-of waiting on retention or editing `completedCourses` by hand.
+from `completedCourses`, `runs`, and `errors`. A pruned course that turns up
+in discovery again is re-checked, found already enrolled, and recorded again,
+so nothing is enrolled twice. To re-verify sooner than a year, use
+`run --recheck` instead of waiting on retention or editing `completedCourses`
+by hand.
+
+**`demoStudents` is exempt.** Those rows track accounts that exist in D2L,
+and the oldest of them are the ones most likely to have lost their course.
+Aging them out would hide the orphans the cleanup exists to find.
 
 ## Log files
 
 In addition to the database, all errors, warnings, and run lifecycle events
 (start, discovery counts, finish summary) are appended to monthly plain-text
 log files in `working/logs/demoStudent_YYYYMM.log`. Per-course success lines
-appear only on the console; the log files stay focused on errors and run
-outcomes. The directory (`logDir`) and file name prefix (`logFilePrefix`)
-are both configurable — see `config.example.toml`.
+appear only on the console. The directory (`logDir`) and file name prefix
+(`logFilePrefix`) are both configurable; see `config.example.toml`.
 
 ## Development
 
@@ -682,26 +683,26 @@ uv run python examples/findOrphanedDemoStudents.py
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
 pull request to `master`:
 
-- **test** — `uv sync` then `uv run pytest`.
-- **deploy** (push to `master` only, after `test` passes, runs on the
-  self-hosted runner) — rsyncs the checkout into
+- `test` runs `uv sync`, then `uv run pytest`.
+- `deploy` runs on a push to `master` only, after `test` passes, on the
+  self-hosted runner. It rsyncs the checkout into
   `/apps/local/cetlocron/data/apps/demoStudent`, then runs `uv sync` there.
 
 Notes on the deploy step:
 
 - `rsync -av --delete` mirrors the repo into the app directory, removing
   files that no longer exist in git. The trailing slashes on `./` and
-  `"$APP_DIR"/` matter — they copy contents into the folder instead of
+  `"$APP_DIR"/` matter: they copy the contents into the folder instead of
   nesting a new folder inside it.
-- `--exclude 'config.toml'` is required — without it, `--delete` would wipe
-  out the live config, since it isn't part of the git checkout.
+- `--exclude 'config.toml'` is required. Without it, `--delete` would wipe
+  out the live config, which isn't part of the git checkout.
 - `--exclude 'working/'` protects the SQLite database, tokens, and logs from
   being touched by a deploy.
 - `uv sync` runs with `working-directory` set to `$APP_DIR`, so the virtual
   environment lives next to the deployed code, not in the runner's temporary
   checkout.
 
-### Docker Deployment
+### Docker deployment
 
 ```sh
 git clone https://github.com/GSU-CETLOE/demoStudent-Python.git
@@ -715,10 +716,10 @@ docker run --rm \
   demo-student:latest run
 ```
 
-If the config sets `proxyUrl`, note that inside the container `127.0.0.1` is
-the container itself, not the host, so `http://127.0.0.1:8080` does not reach a
-proxy running on the host. On Linux, `--network host` shares the host's network, and that URL then
-works.
+With `proxyUrl` set, `127.0.0.1` inside the container is the container
+itself, not the host, so `http://127.0.0.1:8080` does not reach a proxy
+running on the host. On Linux, `--network host` shares the host's network,
+and that URL then works.
 
 ### One-time server setup (before the first deploy)
 
