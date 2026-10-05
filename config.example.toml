@@ -3,7 +3,7 @@
 # The client secret may instead be supplied via the
 # DEMO_STUDENT_CLIENT_SECRET environment variable.
 
-# --- required ---
+# --- required (with proxyKey set below, only host is) ---
 host = "yourschool.brightspace.com"           # D2L hostname, no scheme
 clientId = "your-oauth2-client-id"
 clientSecret = "your-oauth2-client-secret"
@@ -16,6 +16,21 @@ redirectUri = "https://localhost:8443/callback"  # must match the registered red
 # bearer token. The proxy's own settings, such as D2L_PROXY_AUTH_ENABLED,
 # go in apiProxy2's .env file, not here; see "Start apiProxy2" in README.md.
 # proxyUrl = "http://127.0.0.1:8080"
+
+# --- apiProxy2 proxy authentication ---
+# Unset (the default), the tool signs in to D2L itself with `demo-student
+# auth` and sends its own bearer token, through the proxy or not.
+# Uncomment proxyKey to use apiProxy2's proxy authentication instead: the
+# proxy holds the D2L token and the tool sends this key in its place. It
+# needs proxyUrl above and D2L_PROXY_AUTH_ENABLED=true on the proxy. The key
+# is what `apiproxy apps create` printed; treat it like the client secret.
+# With it set, clientId, clientSecret, and redirectUri can be removed, and
+# `demo-student auth` is not used.
+# proxyKey = "your-application-proxy-key"
+#
+# The account to act as. Only needed when the application has been granted
+# more than one account on the proxy.
+# proxyUser = "your-service-account-username"
 
 # --- optional (defaults shown) ---
 # scope = "core:*:*"              # catch-all; grants far more than this tool uses

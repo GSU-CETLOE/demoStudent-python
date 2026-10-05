@@ -14,10 +14,14 @@ retires them.
 
 D2L API calls go straight to the tenant unless `proxyUrl` is set, in which
 case every one goes through apiProxy2, a separate reverse proxy that mirrors
-the tenant's `/d2l/api`. The proxy runs in passthrough mode: this tool still
-signs in with its own OAuth2 application and sends its own bearer token, and
-the proxy relays it. Sign-in and token refresh always go straight to
-`auth.brightspace.com`, which the proxy does not cover.
+the tenant's `/d2l/api`. With `proxyUrl` alone the proxy is a passthrough:
+this tool still signs in with its own OAuth2 application and sends its own
+bearer token, and the proxy relays it. Sign-in and token refresh go straight
+to `auth.brightspace.com`, which the proxy does not cover.
+
+Add `proxyKey` and the tool uses apiProxy2's proxy authentication instead.
+The proxy holds the D2L token, and the tool sends the key the proxy issued
+it and never signs in to D2L itself.
 
 This tool replaces the legacy PHP cron script
 [gsu-dle/add_demo_user](https://github.com/gsu-dle/add_demo_user), moving from
@@ -62,12 +66,37 @@ has to be running, and reachable, wherever the tool runs: your machine, the
 cron server, or a container. Set it up from its own README. Started with
 `uv run apiproxy`, it listens on `http://127.0.0.1:8080`.
 
-Three of apiProxy2's own settings matter here. They go in the proxy's `.env`
-file, not in this tool's `config.toml`:
+The proxy works in one of two modes, set by `D2L_PROXY_AUTH_ENABLED` in its
+`.env` file, and `config.toml` has to pick the same one:
 
-- Leave `D2L_PROXY_AUTH_ENABLED` off. This tool sends its own bearer token,
-  and with proxy authentication on, the proxy refuses any request without an
-  `X-Proxy-Key`.
+| | Passthrough | Proxy authentication |
+| --- | --- | --- |
+| `config.toml` | `proxyUrl` only | `proxyUrl` and `proxyKey` |
+| apiProxy2's `.env` | `D2L_PROXY_AUTH_ENABLED` off (the default) | `D2L_PROXY_AUTH_ENABLED=true` |
+| Who signs in to D2L | This tool, with `demo-student auth` | The proxy, with `apiproxy users authorize` |
+| What each request carries | This tool's bearer token | `X-Proxy-Key`, and no bearer token |
+
+If the two disagree, the first call that needs a credential fails with a 401
+from the proxy: `proxyAuthorizationRequired` when it wanted a key,
+`authorizationRequired` when it wanted a bearer token.
+
+For proxy authentication, the service account is authorized on the proxy and
+this tool is registered there as an application. From the apiProxy2 checkout,
+with `cetloe.api` standing in for your service account's username:
+
+```sh
+uv run apiproxy users authorize cetloe.api            # sign in once as the service account
+uv run apiproxy apps create "Demo Student"            # prints the proxy key
+uv run apiproxy apps grant "Demo Student" cetloe.api
+```
+
+The printed key goes in `config.toml` as `proxyKey`. apiProxy2's README has
+the rest of that setup, including the admin key and OAuth client the proxy
+needs before it will start in this mode.
+
+Two more of apiProxy2's settings matter in either mode. They also go in the
+proxy's `.env` file, not in this tool's `config.toml`:
+
 - `D2L_TENANT_HOST` must name the same tenant as `host` in `config.toml`.
 - If `D2L_RATE_LIMIT_ENABLED` is on, the budget applies to this tool too. A
   full run makes thousands of calls, and at the default of 60 a minute it
@@ -91,7 +120,8 @@ registered OAuth2 application (D2L Admin Tools > Manage Extensibility >
 OAuth 2.0). The registered redirect URI must match `redirectUri` exactly
 (e.g. `https://localhost:8443/callback`). The client secret can also be
 provided via the `DEMO_STUDENT_CLIENT_SECRET` environment variable instead of
-the file. All other settings have defaults; see `config.example.toml`.
+the file. All other settings have defaults; see `config.example.toml`. With
+`proxyKey` set, `host` is the only one of the four you need.
 
 `proxyUrl` picks the route to D2L. Leave it out and the tool calls
 `https://{host}/d2l/api` directly. Set it to the proxy's base URL, such as
@@ -101,6 +131,21 @@ another machine, since every request carries the tool's bearer token. Give the
 proxy's root, not `/d2l/api`: the proxy maps its root to `/d2l/api` itself.
 With the wrong base no path reaches a real D2L route, and commands stop with
 `Could not negotiate API versions`.
+
+`proxyKey` switches the tool to apiProxy2's proxy authentication. It is the
+key the proxy printed when this tool was registered as an application, and it
+only works together with `proxyUrl`. With it set, every request carries
+`X-Proxy-Key` in place of a bearer token, `clientId`, `clientSecret`, and
+`redirectUri` can be left out, and `demo-student auth` has nothing to do.
+Treat the key like the client secret. Anyone holding it can act through the
+proxy as the account it was granted, so it belongs in `config.toml`, which is
+gitignored, and nowhere else. If it leaks, `apiproxy apps rotate` on the proxy
+retires it at once.
+
+`proxyUser` is optional and names the account to act as, sent as
+`X-ICollege-User`. Most setups can leave it out, because the proxy works out
+the account itself when the application has been granted exactly one. Granted
+several, it refuses to pick and answers 400 until `proxyUser` says which.
 
 Runtime state lives in the `working/` directory (configurable via
 `workingDir`; gitignored):
@@ -114,6 +159,9 @@ working/
   datasets/              downloaded Brightspace Data Sets extracts
   localhost.pem(-key)    mkcert certificate for the browser auth flow
 ```
+
+With `proxyKey` there is no `token/` directory and no certificate. The tokens
+are in apiProxy2's own `working/` directory instead.
 
 Two runs sharing a `workingDir` are safe. D2L rotates refresh tokens, and using
 one invalidates it. Without coordination, a second process refreshing would
@@ -175,13 +223,18 @@ Scopes are fixed at authorization time and **do not change on refresh**: after
 editing `scope`, re-run `demo-student auth` or the stored token keeps the old
 set.
 
+With `proxyKey`, `scope` in `config.toml` is not used. The token belongs to
+apiProxy2, so its scopes are whatever the proxy's `D2L_OAUTH_SCOPES` asked for
+when the account was authorized there. That setting defaults to `core:*:*`;
+if you narrow it, it has to cover the same list.
+
 ### Brightspace role and permissions
 
 Two different roles are involved:
 
 | Role | Who holds it |
 | --- | --- |
-| The service account's role | The account signed in via `demo-student auth` (at GSU: `CETLOE API`) |
+| The service account's role | The account signed in via `demo-student auth`, or authorized on apiProxy2 when `proxyKey` is set (at GSU: `CETLOE API`) |
 | The demo student role (`roleId`, default 783) | The `demo.{orgUnitId}` users the tool creates |
 
 Configure the service account's role under **Admin Tools > Roles and
@@ -324,6 +377,21 @@ those courses. The check degrades to a wrong answer instead of a hard failure.
 Neither route escapes the access requirement; the user side just keeps the run
 going.
 
+#### Reading a refusal from apiProxy2
+
+With `proxyKey` set, the proxy can turn a request away before it reaches D2L.
+The tool reports these as a `D2L API error` like any other, and the body names
+the cause. The 403 here is not the D2L 403 above:
+
+| Response | Meaning |
+| --- | --- |
+| 401 `proxyAuthorizationRequired` | The proxy did not issue this `proxyKey`. Compare it with `apiproxy apps show "<name>"` |
+| 401 `applicationDisabled` | The application is registered but switched off on the proxy |
+| 400 `iCollegeUserRequired` | The application has been granted several accounts. Set `proxyUser` |
+| 403 `usernameNotAllowed` | The application has not been granted the account in `proxyUser`, or has been granted none |
+| 503 `usernameNotAuthorized` | Nobody has run `apiproxy users authorize` for that account |
+| 502 `tokenUnavailable` | The proxy could not get a token for the account. Its log says why |
+
 ## Commands
 
 All commands accept `--config PATH` (default: `config.toml`).
@@ -350,11 +418,16 @@ In the manual flow the browser shows a connection error after sign-in. That
 is expected. Copy the full URL from the address bar (it contains the
 authorization code) and paste it into the prompt.
 
+With `proxyKey` set there is nothing for this command to do, and it exits 2
+saying so. The sign-in happens on apiProxy2, where an administrator runs
+`apiproxy users authorize <username>`.
+
 ### `demo-student whoami`
 
-Shows which D2L account the stored tokens act as. Every user and enrollment
-the tool creates is attributed to this account, so check here when a run
-fails with 403s or when several service accounts are in play.
+Shows which D2L account the tool's API calls act as: the one that signed in
+with `auth`, or with `proxyKey` the one apiProxy2 holds a token for. Every
+user and enrollment the tool creates is attributed to this account, so check
+here when a run fails with 403s or when several service accounts are in play.
 
 ```sh
 uv run demo-student whoami
@@ -371,7 +444,13 @@ uv run demo-student whoami
 
 Without `proxyUrl`, the Proxy line reads `none, calling D2L directly`.
 
-Exits 2 with a message to run `demo-student auth` when no tokens are stored.
+With `proxyKey`, the last line reads
+`Token:      held by apiProxy2, requested with proxyKey` and no stored tokens
+are needed. Run it after setting the key to see that the proxy accepts it and
+which account it maps to.
+
+Without `proxyKey`, exits 2 with a message to run `demo-student auth` when no
+tokens are stored.
 
 ### `demo-student run`
 
@@ -728,6 +807,7 @@ sudo mkdir -p /apps/local/cetlocron/data/apps/demoStudent
 sudo chown -R <runner-user> /apps/local/cetlocron/data/apps/demoStudent
 cd /apps/local/cetlocron/data/apps/demoStudent
 cp config.example.toml config.toml   # then fill in host, clientId, clientSecret, redirectUri
+                                     # (or host, proxyUrl, proxyKey)
 ```
 
 If the config sets `proxyUrl`, the server also needs a running apiProxy2 that

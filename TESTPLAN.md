@@ -12,6 +12,13 @@ manual testing.
 - [ ] `cp config.example.toml config.toml`, fill in test-instance values
 - [ ] With `proxyUrl = "127.0.0.1:8080"` (no scheme), any command exits 2
       and says it must start with `http://` or `https://`
+- [ ] With `proxyKey` set and `proxyUrl` commented out, any command exits 2
+      and says `proxyKey is set without proxyUrl`
+- [ ] With `proxyUser` set and `proxyKey` commented out, any command exits 2
+      and says `proxyUser is set without proxyKey`
+- [ ] With `proxyUrl` and `proxyKey` set and `clientId`, `clientSecret`, and
+      `redirectUri` removed, `uv run demo-student status` runs. Without
+      `proxyKey`, the same config exits 2 naming the three missing values
 - [ ] `uv run demo-student --help` shows the seven subcommands
 - [ ] Running any command with a missing config file prints a clear error and exits 2
 
@@ -27,6 +34,8 @@ manual testing.
 - [ ] Pasting a redirect URL with a wrong/stale `state` fails with a clear error
 - [ ] After deleting `working/token/token.json`, `run` exits 2 with a message that
       says to run `demo-student auth`
+- [ ] With `proxyKey` set, `uv run demo-student auth` exits 2, opens no
+      browser, and points at `apiproxy users authorize`
 
 ## whoami
 
@@ -38,8 +47,8 @@ manual testing.
 
 ## Route to D2L
 
-The rest of this plan runs in either mode. Work through it once with
-`proxyUrl` set before relying on the proxy in production.
+The rest of this plan runs in any of the three modes below. Work through it
+once in the mode production will use before relying on it there.
 
 Direct, with no `proxyUrl` in `config.toml`:
 
@@ -70,6 +79,36 @@ Through the proxy, with apiProxy2 running in passthrough mode and
       shows the `datasets/bds` listing, the extracts listing, and the
       download request. The download from storage itself does not appear
       there, because the tool follows D2L's redirect to storage directly
+
+Through the proxy with proxy authentication. On apiProxy2,
+`D2L_PROXY_AUTH_ENABLED=true`, the service account has been authorized with
+`apiproxy users authorize`, and this tool is registered with
+`apiproxy apps create` and granted that account. In `config.toml`,
+`proxyUrl` and `proxyKey` are set and `clientId`, `clientSecret`, and
+`redirectUri` are removed:
+
+- [ ] With `working/token/token.json` deleted, `whoami` succeeds, shows the
+      service account, and ends with "Token: held by apiProxy2, requested
+      with proxyKey". The key itself is not printed
+- [ ] While `whoami` runs, the proxy's log names the application and the
+      account on each request and still shows `"cache":"BYPASS"`
+- [ ] `run --ou-list <test-course-ou> --dry-run` completes, and no
+      `working/token/` directory is created
+- [ ] Change one character of `proxyKey`. `whoami` exits 1 with HTTP 401
+      and `proxyAuthorizationRequired`. Put the key back afterwards
+- [ ] Set `proxyUser` to the granted account: `whoami` still succeeds. Set
+      it to an account the application was not granted: `whoami` exits 1
+      with HTTP 403 and `usernameNotAllowed`. Remove `proxyUser` afterwards
+- [ ] Grant the application a second account on the proxy and leave
+      `proxyUser` unset: `whoami` exits 1 with HTTP 400 and
+      `iCollegeUserRequired`. Set `proxyUser` and it succeeds. Revoke the
+      second grant afterwards
+- [ ] With `D2L_PROXY_AUTH_ENABLED` turned off on the proxy and `proxyKey`
+      still set here, `whoami` exits 1 with HTTP 401 and
+      `authorizationRequired`
+- [ ] With `D2L_PROXY_AUTH_ENABLED=true` on the proxy and `proxyKey`
+      commented out here (OAuth settings restored, tokens stored), `whoami`
+      exits 1 with HTTP 401 and `proxyAuthorizationRequired`
 
 ## run
 
