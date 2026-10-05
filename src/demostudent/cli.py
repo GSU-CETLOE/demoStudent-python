@@ -1,8 +1,9 @@
 """Command-line interface for the demo student tool.
 
 Commands:
-    demo-student auth [--manual]        obtain and store OAuth2 tokens
-    demo-student whoami                 show the D2L account the stored tokens act as
+    demo-student auth [--manual]        obtain and store OAuth2 tokens (not used
+                                         with proxyKey, where apiProxy2 signs in)
+    demo-student whoami                 show the D2L account API calls act as
     demo-student run [options]          add demo students to every course offering
                                          in the organization (--recheck re-verifies
                                          already-completed courses instead of
@@ -56,12 +57,13 @@ def buildParser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     authParser = subparsers.add_parser(
-        "auth", help="Sign in to D2L and store OAuth2 tokens")
+        "auth", help="Sign in to D2L and store OAuth2 tokens "
+                     "(not used with proxyKey, where apiProxy2 signs in)")
     authParser.add_argument("--manual", action="store_true",
                             help="Paste-the-URL flow for machines without mkcert or a browser")
 
     subparsers.add_parser(
-        "whoami", help="Show which D2L account the stored tokens authenticate as")
+        "whoami", help="Show which D2L account this tool's API calls act as")
 
     runParser = subparsers.add_parser(
         "run", help="Check courses and add missing demo students")
@@ -119,9 +121,21 @@ def buildParser() -> argparse.ArgumentParser:
     return parser
 
 
+def _buildApiClient(config: AppConfig) -> D2lApiClient:
+    """A D2L client holding whichever credential the config calls for.
+
+    With proxyKey set, apiProxy2 holds the D2L token, so the token store
+    is left alone: there may be no token file, and a stale one must not
+    stop the command.
+    """
+    if config.proxyKey:
+        return D2lApiClient(config, None)
+    return D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+
+
 def _fetchIdentity(config: AppConfig) -> dict[str, Any]:
-    """Ask D2L which user the stored tokens act as."""
-    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    """Ask D2L which user this tool's API calls act as."""
+    api = _buildApiClient(config)
     try:
         return api.whoAmI()
     finally:
@@ -134,8 +148,18 @@ def _identityName(identity: dict[str, Any]) -> str:
 
 
 def cmdAuth(config: AppConfig, manual: bool) -> int:
-    """Run an interactive OAuth flow, then verify the token with whoami."""
+    """Run an interactive OAuth flow, then verify the token with whoami.
+
+    Refused when proxyKey is set. The sign-in belongs to apiProxy2 then,
+    and a token stored here would never be used.
+    """
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
+    if config.proxyKey:
+        raise AuthError(
+            "auth is not used while proxyKey is set: apiProxy2 signs in to D2L "
+            "for this tool. An administrator authorizes the account on the proxy "
+            "with 'apiproxy users authorize <username>'. Run 'demo-student whoami' "
+            "to check that the key works.")
     obtainTokensInteractively(config, manual=manual)
     identityName = _identityName(_fetchIdentity(config))
     emit(f"Authenticated to {config.host} as {identityName}")
@@ -145,15 +169,19 @@ def cmdAuth(config: AppConfig, manual: bool) -> int:
 
 
 def cmdWhoami(config: AppConfig) -> int:
-    """Print the D2L account the stored tokens make API calls as."""
+    """Print the D2L account this tool's API calls act as."""
     identity = _fetchIdentity(config)
+    if config.proxyKey:
+        tokenLine = "  Token:      held by apiProxy2, requested with proxyKey"
+    else:
+        tokenLine = f"  Token file: {config.tokenPath}"
     emitBlock("Authenticated account", [
         f"  Host:       {config.host}",
         f"  Proxy:      {config.proxyUrl or 'none, calling D2L directly'}",
         f"  Name:       {_identityName(identity)}",
         f"  Username:   {identity.get('UniqueName', '-')}",
         f"  User id:    {identity.get('Identifier', '-')}",
-        f"  Token file: {config.tokenPath}",
+        tokenLine,
     ])
     return 0
 
@@ -166,7 +194,7 @@ def cmdRun(config: AppConfig, args: argparse.Namespace) -> int:
         ouList = [int(orgUnitId) for orgUnitId in args.ou_list.split(",") if orgUnitId.strip()]
 
     db = MetricsDb(config.dbPath)
-    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    api = _buildApiClient(config)
     try:
         summary = runEnrollment(
             config, api, db,
@@ -286,7 +314,7 @@ def cmdFindOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     emit("find-orphans: a report only. No account or course is changed.")
     db = MetricsDb(config.dbPath)
-    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    api = _buildApiClient(config)
     try:
         orphans = _buildInventory(api, config, db, rescan=args.rescan,
                                   useApiWalk=args.api_walk)
@@ -320,7 +348,7 @@ def cmdDeleteOrphans(config: AppConfig, args: argparse.Namespace) -> int:
     """
     setupFileLogging(config.workingDir, config.logDir, config.logFilePrefix)
     db = MetricsDb(config.dbPath)
-    api = D2lApiClient(config, TokenManager(config, TokenStore(config.tokenPath)))
+    api = _buildApiClient(config)
     try:
         orphans = _buildInventory(api, config, db, rescan=args.rescan,
                                   useApiWalk=args.api_walk)

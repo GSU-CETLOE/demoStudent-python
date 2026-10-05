@@ -7,6 +7,10 @@ DEMO_STUDENT_CLIENT_SECRET environment variable.
 D2L API calls go through apiProxy2 when proxyUrl is set, and straight
 to https://{host}/d2l/api when it is not. host names the tenant either
 way: OAuth is issued for it, and D2L's own absolute links point at it.
+
+proxyKey turns on apiProxy2's proxy authentication. The proxy then
+holds the D2L token and this tool sends the key in its place, so the
+OAuth settings (clientId, clientSecret, redirectUri) are not needed.
 """
 
 import os
@@ -31,11 +35,15 @@ class AppConfig:
     """All runtime settings for the application."""
 
     host: str
-    clientId: str
-    clientSecret: str
-    redirectUri: str
     workingDir: Path
+    # Empty when proxyKey is set: apiProxy2 signs in to D2L then, and this
+    # tool has no OAuth2 application of its own.
+    clientId: str = ""
+    clientSecret: str = ""
+    redirectUri: str = ""
     proxyUrl: str | None = None
+    proxyKey: str | None = None
+    proxyUser: str | None = None
     scope: str = "core:*:*"
     roleId: int = 783
     orgOu: int = 1070555
@@ -91,12 +99,17 @@ def loadConfig(configPath: Path | str) -> AppConfig:
     if envSecret:
         raw["clientSecret"] = envSecret
 
-    missing = [key for key in ("host", "clientId", "clientSecret", "redirectUri") if not raw.get(key)]
+    raw["proxyKey"] = raw.get("proxyKey") or None
+    raw["proxyUser"] = raw.get("proxyUser") or None
+
+    requiredKeys = ["host"]
+    if raw["proxyKey"] is None:
+        requiredKeys += ["clientId", "clientSecret", "redirectUri"]
+    missing = [key for key in requiredKeys if not raw.get(key)]
     if missing:
-        raise ConfigError(
-            f"Missing required config values: {', '.join(missing)} "
-            f"(clientSecret may also be set via {CLIENT_SECRET_ENV_VAR})"
-        )
+        secretHint = (f" (clientSecret may also be set via {CLIENT_SECRET_ENV_VAR})"
+                      if "clientSecret" in missing else "")
+        raise ConfigError(f"Missing required config values: {', '.join(missing)}{secretHint}")
 
     if raw.get("proxyUrl"):
         if not raw["proxyUrl"].startswith(("http://", "https://")):
@@ -105,6 +118,15 @@ def loadConfig(configPath: Path | str) -> AppConfig:
         raw["proxyUrl"] = raw["proxyUrl"].rstrip("/")
     else:
         raw["proxyUrl"] = None
+
+    if raw["proxyKey"] and raw["proxyUrl"] is None:
+        raise ConfigError(
+            "proxyKey is set without proxyUrl. The key is only for apiProxy2, "
+            "so set proxyUrl to the proxy that issued it")
+    if raw["proxyUser"] and raw["proxyKey"] is None:
+        raise ConfigError(
+            "proxyUser is set without proxyKey. It names the account for "
+            "apiProxy2's proxy authentication, which needs the key")
 
     workingDir = Path(raw.pop("workingDir", "working"))
     if not workingDir.is_absolute():

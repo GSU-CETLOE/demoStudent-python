@@ -4,11 +4,15 @@ Calls go to https://{host}/d2l/api, or through apiProxy2 when proxyUrl is
 set. The proxy mirrors the tenant's /d2l/api at its own root, so
 {proxyUrl}/lp/1.47/users/whoami reaches
 https://{host}/d2l/api/lp/1.47/users/whoami, and route paths are the same
-either way. The proxy runs in passthrough mode, so this client sends its
-own bearer token in both.
+either way.
+
+The credential is this tool's own bearer token, sent to D2L directly or
+relayed by the proxy in passthrough mode. With proxyKey set it is the
+proxy key instead: apiProxy2's proxy authentication holds the D2L token
+and attaches it, so this client has no token to send or refresh.
 
 Wraps a shared httpx.Client (safe for concurrent use) and handles the
-cross-cutting concerns: bearer auth, one refresh-and-retry on 401,
+cross-cutting concerns: the credential, one refresh-and-retry on 401,
 Retry-After backoff on 429, and product-version negotiation via
 GET /versions/ so no API versions are hardcoded.
 """
@@ -26,6 +30,11 @@ from .config import AppConfig
 RATE_LIMIT_MAX_RETRIES = 5
 DEFAULT_RETRY_AFTER_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 30.0
+
+# apiProxy2's proxy authentication headers: the calling application's key,
+# and the account to act as when the application has been granted several.
+PROXY_KEY_HEADER = "X-Proxy-Key"
+PROXY_USER_HEADER = "X-ICollege-User"
 
 
 class D2lApiError(Exception):
@@ -45,16 +54,30 @@ class D2lUnavailableError(D2lApiError):
 
 
 class D2lApiClient:
-    """Client for the D2L routes this application needs."""
+    """Client for the D2L routes this application needs.
+
+    tokenManager supplies this tool's own bearer token. Pass None when
+    config.proxyKey is set, since apiProxy2 holds the token then.
+    """
 
     def __init__(
         self,
         config: AppConfig,
-        tokenManager: TokenManager,
+        tokenManager: TokenManager | None,
         httpClient: httpx.Client | None = None,
         sleepFunc: Callable[[float], None] = time.sleep,
     ):
         self._config = config
+        self._proxyKeyHeaders: dict[str, str] = {}
+        if config.proxyKey:
+            # The config picks the credential, so a token manager passed
+            # alongside a proxy key goes unused.
+            tokenManager = None
+            self._proxyKeyHeaders[PROXY_KEY_HEADER] = config.proxyKey
+            if config.proxyUser:
+                self._proxyKeyHeaders[PROXY_USER_HEADER] = config.proxyUser
+        elif tokenManager is None:
+            raise ValueError("D2lApiClient needs a TokenManager unless config.proxyKey is set")
         self._tokenManager = tokenManager
         self._tenantApiUrl = f"https://{config.host}/d2l/api"
         if config.proxyUrl:
@@ -119,13 +142,18 @@ class D2lApiClient:
     ) -> httpx.Response:
         """Issue a request with auth, 401 refresh-retry, and 429 backoff.
 
+        The refresh-retry applies only to this tool's own token. With a
+        proxy key apiProxy2 does its own refresh-and-retry against D2L,
+        so a 401 that comes back is final.
+
         Every request asks the proxy not to cache. This tool decides what
         to create, enroll, deactivate or delete from what it reads, and
         the proxy would otherwise answer a read with a copy up to minutes
         old. The header goes out in direct mode too: the proxy forwards
         it to D2L anyway, so D2L sees the same request either way.
         """
-        accessToken = self._tokenManager.getAccessToken()
+        tokenManager = self._tokenManager
+        accessToken = tokenManager.getAccessToken() if tokenManager else None
         refreshed = False
         rateLimitRetries = 0
         while True:
@@ -135,13 +163,13 @@ class D2lApiClient:
                     f"{self._apiBaseUrl}{path}",
                     json=json,
                     params=params,
-                    headers={"Authorization": f"Bearer {accessToken}",
-                             "Cache-Control": "no-cache"},
+                    headers=self._requestHeaders(accessToken),
                 )
             except httpx.ConnectError as error:
                 raise D2lUnavailableError(f"{self._unreachableMessage} ({error})") from error
-            if response.status_code == 401 and not refreshed:
-                accessToken = self._tokenManager.handleUnauthorized(accessToken)
+            if (response.status_code == 401 and not refreshed
+                    and tokenManager is not None and accessToken is not None):
+                accessToken = tokenManager.handleUnauthorized(accessToken)
                 refreshed = True
                 continue
             if response.status_code == 429 and rateLimitRetries < RATE_LIMIT_MAX_RETRIES:
@@ -159,6 +187,17 @@ class D2lApiClient:
                 f"{method} {path} failed with HTTP {response.status_code}: {response.text}",
                 httpStatus=response.status_code,
             )
+
+    def _requestHeaders(self, accessToken: str | None) -> dict[str, str]:
+        """The no-cache ask plus this client's credential.
+
+        The credential is the bearer token when this tool holds one, and
+        the proxy key otherwise. Never both: with proxy authentication on,
+        apiProxy2 ignores any Authorization header and sends its own.
+        """
+        if accessToken is None:
+            return {**self._proxyKeyHeaders, "Cache-Control": "no-cache"}
+        return {"Authorization": f"Bearer {accessToken}", "Cache-Control": "no-cache"}
 
     def _apiPath(self, link: str) -> str:
         """The part of a D2L API link after /d2l/api, as a route path.

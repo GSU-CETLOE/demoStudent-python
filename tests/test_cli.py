@@ -272,6 +272,58 @@ def test_stoppedProxyGetsAPlainMessage(configPath, storedTokens, capsys):
     assert "Is apiProxy2 running?" in err
 
 
+@pytest.fixture
+def proxyKeyConfigPath(tmp_path):
+    """A config for apiProxy2's proxy authentication: a key, and no OAuth settings."""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"""
+host = "example.brightspace.com"
+proxyUrl = "http://127.0.0.1:8080"
+proxyKey = "app-guid"
+workingDir = '{tmp_path}/working'
+maxWorkers = 4
+"""
+    )
+    return path
+
+
+@respx.mock
+def test_whoamiWithProxyKeyNeedsNoStoredTokens(proxyKeyConfigPath, capsys):
+    """apiProxy2 holds the token, so there is no token file to find or to show."""
+    respx.get(f"{PROXY}/versions/").mock(
+        return_value=httpx.Response(200, json=VERSIONS_RESPONSE))
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1234", "FirstName": "Api",
+                                               "LastName": "User", "UniqueName": "cetloe.api"}))
+    assert main(["--config", str(proxyKeyConfigPath), "whoami"]) == 0
+    out = capsys.readouterr().out
+    assert "cetloe.api" in out
+    assert "Token:      held by apiProxy2, requested with proxyKey" in out
+    assert "token.json" not in out
+    assert "app-guid" not in out  # the key is a credential
+    assert route.calls.last.request.headers["X-Proxy-Key"] == "app-guid"
+
+
+@respx.mock
+def test_runWithProxyKeyNeedsNoStoredTokens(proxyKeyConfigPath, capsys):
+    mockDiscovery([301, 302])
+    mockCourseWork()
+    assert main(["--config", str(proxyKeyConfigPath), "run"]) == 0
+    assert "Users created:        2" in capsys.readouterr().out
+
+
+@respx.mock
+def test_authWithProxyKeyPointsAtTheProxy(proxyKeyConfigPath, capsys):
+    """Signing in is apiProxy2's job in this mode, so auth has nothing to do."""
+    exitCode = main(["--config", str(proxyKeyConfigPath), "auth", "--manual"])
+    assert exitCode == 2
+    captured = capsys.readouterr()
+    assert "proxyKey" in captured.err
+    assert "apiproxy users authorize" in captured.err
+    assert captured.out == ""
+
+
 def test_whoamiWithoutTokensTellsUserToAuth(configPath, capsys):
     exitCode = main(["--config", str(configPath), "whoami"])
     assert exitCode == 2

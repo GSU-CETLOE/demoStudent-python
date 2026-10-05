@@ -54,10 +54,106 @@ def directApi(config):
     client.close()
 
 
+@pytest.fixture
+def proxyKeyConfig(tmp_path):
+    """A config for apiProxy2's proxy authentication: a key, and no OAuth settings."""
+    return AppConfig(
+        host="example.brightspace.com",
+        proxyUrl="http://127.0.0.1:8080",
+        proxyKey="app-guid",
+        workingDir=tmp_path / "working",
+    )
+
+
+@pytest.fixture
+def proxyKeyApi(proxyKeyConfig):
+    """A client that holds no D2L token and sends its proxy key instead."""
+    client = D2lApiClient(proxyKeyConfig, None, sleepFunc=lambda _seconds: None)
+    yield client
+    client.close()
+
+
 def mockVersions():
     return respx.get(f"{PROXY}/versions/").mock(
         return_value=httpx.Response(200, json=VERSIONS_RESPONSE)
     )
+
+
+@respx.mock
+def test_proxyKeyIsSentInsteadOfABearerToken(proxyKeyApi):
+    """apiProxy2 holds the D2L token, so this client has none to send."""
+    versionsRoute = mockVersions()
+    whoAmIRoute = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1"}))
+    assert proxyKeyApi.whoAmI() == {"Identifier": "1"}
+    for route in (versionsRoute, whoAmIRoute):
+        headers = route.calls.last.request.headers
+        assert headers["X-Proxy-Key"] == "app-guid"
+        assert "Authorization" not in headers
+        assert "X-ICollege-User" not in headers
+        assert headers["Cache-Control"] == "no-cache"
+
+
+@respx.mock
+def test_proxyUserNamesTheAccountToActAs(proxyKeyConfig):
+    """An application granted several accounts has to say which one it means."""
+    from dataclasses import replace
+    api = D2lApiClient(replace(proxyKeyConfig, proxyUser="jdoe"), None)
+    mockVersions()
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1"}))
+    api.whoAmI()
+    assert route.calls.last.request.headers["X-ICollege-User"] == "jdoe"
+    api.close()
+
+
+@respx.mock
+def test_proxyRefusalOfTheKeyIsReportedWithoutARetry(proxyKeyApi):
+    """There is no token here to refresh, so a 401 is the proxy's final answer."""
+    mockVersions()
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(401, json={
+            "error": "proxyAuthorizationRequired",
+            "message": "Send your application's proxy key as X-Proxy-Key.",
+            "requestId": "request-1"}))
+    with pytest.raises(D2lApiError) as excInfo:
+        proxyKeyApi.whoAmI()
+    assert excInfo.value.httpStatus == 401
+    assert "proxyAuthorizationRequired" in str(excInfo.value)
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_ownTokenModeSendsNoProxyHeaders(api):
+    mockVersions()
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1"}))
+    api.whoAmI()
+    headers = route.calls.last.request.headers
+    assert "X-Proxy-Key" not in headers
+    assert "X-ICollege-User" not in headers
+
+
+@respx.mock
+def test_proxyKeyOutranksATokenManager(proxyKeyConfig):
+    """The config picks the credential, so a stored token is never sent with a key."""
+    store = TokenStore(proxyKeyConfig.tokenPath)
+    store.save(TokenSet(accessToken="valid-token", refreshToken="r", expiresAt=time.time() + 3600))
+    api = D2lApiClient(proxyKeyConfig, TokenManager(proxyKeyConfig, store))
+    mockVersions()
+    route = respx.get(f"{PROXY}/lp/1.47/users/whoami").mock(
+        return_value=httpx.Response(200, json={"Identifier": "1"}))
+    api.whoAmI()
+    headers = route.calls.last.request.headers
+    assert headers["X-Proxy-Key"] == "app-guid"
+    assert "Authorization" not in headers
+    api.close()
+
+
+def test_clientWithoutProxyKeyNeedsATokenManager(config):
+    """Without a key the bearer token is the only credential there is."""
+    with pytest.raises(ValueError, match="TokenManager"):
+        D2lApiClient(config, None)
 
 
 @respx.mock

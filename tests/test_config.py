@@ -131,6 +131,69 @@ def test_proxyUrlTrailingSlashDropped(tmp_path):
     assert config.proxyUrl == "https://proxy.example.edu/d2l"
 
 
+PROXY_KEY_CONFIG = """
+host = "example.brightspace.com"
+proxyUrl = "http://127.0.0.1:8080"
+proxyKey = "8cc165e1-9d71-462c-b784-081412188b18"
+"""
+
+
+def test_proxyKeyAndProxyUserAreOptional(tmp_path):
+    """Without a key the tool signs in to D2L itself and sends its own token."""
+    config = loadConfig(writeConfig(tmp_path, MINIMAL_CONFIG))
+    assert config.proxyKey is None
+    assert config.proxyUser is None
+
+
+def test_proxyKeyMakesTheOAuthSettingsOptional(tmp_path, monkeypatch):
+    """With a key apiProxy2 signs in to D2L, so this tool has no OAuth2 application."""
+    monkeypatch.delenv("DEMO_STUDENT_CLIENT_SECRET", raising=False)
+    config = loadConfig(writeConfig(tmp_path, PROXY_KEY_CONFIG))
+    assert config.proxyKey == "8cc165e1-9d71-462c-b784-081412188b18"
+    assert config.proxyUser is None
+    assert config.clientId == ""
+    assert config.clientSecret == ""
+    assert config.redirectUri == ""
+
+
+def test_proxyKeyStillRequiresHost(tmp_path):
+    """D2L's absolute links name the tenant, so host is needed in every mode."""
+    content = PROXY_KEY_CONFIG.replace('host = "example.brightspace.com"\n', "")
+    with pytest.raises(ConfigError, match="host"):
+        loadConfig(writeConfig(tmp_path, content))
+
+
+def test_proxyKeyWithoutProxyUrlRaises(tmp_path):
+    """The key means nothing to D2L, so there has to be a proxy to send it to."""
+    with pytest.raises(ConfigError, match="proxyKey is set without proxyUrl"):
+        loadConfig(writeConfig(tmp_path, MINIMAL_CONFIG + 'proxyKey = "some-guid"\n'))
+
+
+def test_emptyProxyKeyMeansTheToolSignsInItself(tmp_path, monkeypatch):
+    """An emptied value reads as unset, so the OAuth settings are required again."""
+    monkeypatch.delenv("DEMO_STUDENT_CLIENT_SECRET", raising=False)
+    content = PROXY_KEY_CONFIG.replace("8cc165e1-9d71-462c-b784-081412188b18", "")
+    with pytest.raises(ConfigError, match="clientId, clientSecret, redirectUri"):
+        loadConfig(writeConfig(tmp_path, content))
+
+
+def test_proxyUserNamesTheAccountToActAs(tmp_path):
+    config = loadConfig(writeConfig(tmp_path, PROXY_KEY_CONFIG + 'proxyUser = "jdoe"\n'))
+    assert config.proxyUser == "jdoe"
+
+
+def test_emptyProxyUserMeansTheProxyPicksTheAccount(tmp_path):
+    config = loadConfig(writeConfig(tmp_path, PROXY_KEY_CONFIG + 'proxyUser = ""\n'))
+    assert config.proxyUser is None
+
+
+def test_proxyUserWithoutProxyKeyRaises(tmp_path):
+    """Only apiProxy2's proxy authentication reads the account name."""
+    content = MINIMAL_CONFIG + 'proxyUrl = "http://127.0.0.1:8080"\nproxyUser = "jdoe"\n'
+    with pytest.raises(ConfigError, match="proxyUser is set without proxyKey"):
+        loadConfig(writeConfig(tmp_path, content))
+
+
 def test_missingClientSecretRaises(tmp_path, monkeypatch):
     monkeypatch.delenv("DEMO_STUDENT_CLIENT_SECRET", raising=False)
     content = MINIMAL_CONFIG.replace('clientSecret = "my-client-secret"\n', "")
